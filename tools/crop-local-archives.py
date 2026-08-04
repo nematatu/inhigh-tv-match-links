@@ -298,6 +298,33 @@ def find_tool(name: str) -> str:
     raise FileNotFoundError(f"{name} が見つかりません。Homebrew等でインストールしてPATHを確認してください。")
 
 
+def start_caffeinate() -> subprocess.Popen[Any] | None:
+    """macOSの処理中自動スリープを抑止する。未対応環境では何もしない。"""
+    caffeinate = shutil.which("caffeinate")
+    if not caffeinate:
+        return None
+    try:
+        return subprocess.Popen(
+            [caffeinate, "-dimsu", "-w", str(os.getpid())],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except OSError:
+        return None
+
+
+def stop_caffeinate(process: subprocess.Popen[Any] | None) -> None:
+    """caffeinateを処理終了時に確実に終了する。"""
+    if process is None or process.poll() is not None:
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait()
+
+
 def duration_seconds(path: Path, ffprobe: str) -> float:
     result = subprocess.run(
         [ffprobe, "-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", str(path)],
@@ -839,6 +866,11 @@ def main() -> int:
     terminal = TerminalUI(enabled=sys.stdout.isatty() and not args.no_tui)
     LOGGER = RunLogger(log_path, terminal)
     install_signal_handlers()
+    caffeinate_process = start_caffeinate()
+    if caffeinate_process is not None:
+        LOGGER.write("処理中の自動スリープを抑止しました（caffeinate）。")
+    else:
+        LOGGER.write("caffeinateが見つからないため、自動スリープ抑止は利用していません。")
     LOGGER.write("出力構成を確認中（既存の旧形式動画は削除せず、新しい分類先へコピーします）")
     migrated_count, migration_errors = migrate_legacy_outputs(jobs, args.target)
     if migrated_count:
@@ -960,6 +992,9 @@ def main() -> int:
             state["status"] = "completed"
             update_state(state, state_path)
             LOGGER.write(f"完了: {state['completed']}/{len(jobs)}件")
+        stop_caffeinate(caffeinate_process)
+        if caffeinate_process is not None:
+            LOGGER.write("自動スリープ抑止を解除しました。")
         LOGGER.close()
         LOGGER = None
         lock.__exit__(None, None, None)
