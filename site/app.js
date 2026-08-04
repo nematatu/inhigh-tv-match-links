@@ -122,6 +122,15 @@ function updateVisibleStats(matches) {
   elements.unavailable.textContent = matches.filter((entry) => entry.status === "unavailable").length.toLocaleString("ja-JP");
 }
 
+function resetFilterControls() {
+  elements.type.value = "all";
+  elements.category.value = "all";
+  elements.date.value = "all";
+  elements.court.value = "all";
+  elements.search.value = "";
+  elements.availableOnly.checked = false;
+}
+
 function appendText(parent, tagName, className, text) {
   const element = document.createElement(tagName);
   element.className = className;
@@ -274,6 +283,8 @@ function render() {
 }
 
 function initialiseFilters() {
+  // 新しく開いたときは全試合を表示し、前回のブラウザ復元値で件数が減らないようにします。
+  resetFilterControls();
   setOptions(elements.category, state.matches.map((entry) => entry.category), categoryLabel);
   setOptions(elements.date, state.matches.map((entry) => entry.date), dateLabel);
   setOptions(elements.court, state.matches.map((entry) => entry.court), (value) => `${value}コート`);
@@ -282,12 +293,7 @@ function initialiseFilters() {
     element.addEventListener("change", render);
   });
   elements.reset.addEventListener("click", () => {
-    elements.type.value = "all";
-    elements.category.value = "all";
-    elements.date.value = "all";
-    elements.court.value = "all";
-    elements.search.value = "";
-    elements.availableOnly.checked = false;
+    resetFilterControls();
     render();
   });
 }
