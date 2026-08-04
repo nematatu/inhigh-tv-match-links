@@ -137,10 +137,16 @@ function renderSides(parent, entry) {
     appendText(parent, "p", "side-line side-line--empty", "対戦者名はBIRD SCOREで確認");
     return;
   }
+  const winnerIndex = entry.result?.winnerIndex === 0 || entry.result?.winnerIndex === 1
+    ? entry.result.winnerIndex
+    : null;
   sides.forEach((side, index) => {
     const line = document.createElement("p");
     line.className = "side-line";
-    line.textContent = side.name || `${index + 1}チーム`;
+    if (winnerIndex === index) line.classList.add("side-line--winner");
+    else if (winnerIndex !== null) line.classList.add("side-line--loser");
+
+    appendText(line, "strong", "side-name", side.name || `${index + 1}チーム`);
     if (side.school) {
       const school = document.createElement("span");
       school.className = "side-school";
@@ -156,29 +162,73 @@ function renderSides(parent, entry) {
         line.append(" ", detail);
       }
     }
+    if (winnerIndex === index) appendText(line, "span", "side-result-badge", "勝者");
     parent.append(line);
   });
 }
 
-function resultLabel(entry) {
+function resultDetail(entry) {
   const result = entry.result;
   if (!result) return "";
-  const losses = (result.reasonsForLoss || []).filter(Boolean);
-  const winner = result.winnerName ? `勝者: ${result.winnerName}` : "結果確認済み";
-  return losses.length ? `${winner} · ${losses.join("・")}` : winner;
+  const reasons = (result.reasonsForLoss || [])
+    .map((reason, index) => reason ? `${entry.sides?.[index]?.name || `${index + 1}側`}: ${reason}` : "")
+    .filter(Boolean);
+  if (reasons.length) return reasons.join(" / ");
+  return result.winnerIndex === null ? "結果確認済み" : "";
 }
 
-function scoreLabel(entry) {
+function renderScore(parent, entry) {
   const score = entry.score;
-  if (!score?.games?.length) return "";
+  if (!score?.games?.length || !entry.sides?.length) return;
   const games = score.games
     .filter((game) => game.some((point) => Number.isFinite(point)))
-    .map((game) => `${game[0] ?? "-"}-${game[1] ?? "-"}`);
-  if (!games.length) return "";
-  const gameWins = (score.gameWins || []).every((wins) => Number.isFinite(wins))
-    ? `（ゲーム ${score.gameWins.join("-")}）`
-    : "";
-  return `スコア: ${games.join(" / ")} ${gameWins}`.trim();
+  if (!games.length) return;
+
+  const block = document.createElement("div");
+  block.className = "score-block";
+  const label = document.createElement("p");
+  label.className = "score-block__label";
+  label.append("ゲーム別スコア");
+  const gameWins = (score.gameWins || []).filter((wins) => Number.isFinite(wins));
+  if (gameWins.length === 2) {
+    appendText(label, "span", "score-block__summary", `ゲーム ${gameWins[0]}-${gameWins[1]}`);
+  }
+  block.append(label);
+
+  const tableWrap = document.createElement("div");
+  tableWrap.className = "score-table-wrap";
+  const table = document.createElement("table");
+  table.className = "score-table";
+  const head = document.createElement("thead");
+  const headRow = document.createElement("tr");
+  appendText(headRow, "th", "score-table__side", "対戦者");
+  games.forEach((_, index) => appendText(headRow, "th", "score-table__game", `第${index + 1}G`));
+  appendText(headRow, "th", "score-table__wins", "勝ゲーム");
+  head.append(headRow);
+  table.append(head);
+
+  const body = document.createElement("tbody");
+  const winnerIndex = entry.result?.winnerIndex === 0 || entry.result?.winnerIndex === 1
+    ? entry.result.winnerIndex
+    : null;
+  entry.sides.slice(0, 2).forEach((side, sideIndex) => {
+    const row = document.createElement("tr");
+    if (winnerIndex === sideIndex) row.className = "score-table__winner";
+    else if (winnerIndex !== null) row.className = "score-table__loser";
+    const name = side.name || `${sideIndex + 1}側`;
+    appendText(row, "th", "score-table__side", name).scope = "row";
+    games.forEach((game) => {
+      const point = Number.isFinite(game[sideIndex]) ? game[sideIndex] : "—";
+      appendText(row, "td", "score-table__game", String(point));
+    });
+    const wins = Number.isFinite(score.gameWins?.[sideIndex]) ? score.gameWins[sideIndex] : "—";
+    appendText(row, "td", "score-table__wins", String(wins));
+    body.append(row);
+  });
+  table.append(body);
+  tableWrap.append(table);
+  block.append(tableWrap);
+  parent.append(block);
 }
 
 function renderCard(entry) {
@@ -194,13 +244,12 @@ function renderCard(entry) {
   sides.className = "match-card__sides";
   appendText(sides, "span", "match-card__detail", entry.eventTitle || entry.tournamentName || "");
   renderSides(sides, entry);
-  const result = resultLabel(entry);
-  const score = scoreLabel(entry);
-  if (result || score) {
+  const detail = resultDetail(entry);
+  if (detail || entry.score?.games?.length) {
     const resultBlock = document.createElement("div");
     resultBlock.className = "match-card__result";
-    if (result) appendText(resultBlock, "p", "result-line", result);
-    if (score) appendText(resultBlock, "p", "score-line", score);
+    if (detail) appendText(resultBlock, "p", "result-line", detail);
+    renderScore(resultBlock, entry);
     sides.append(resultBlock);
   }
 
