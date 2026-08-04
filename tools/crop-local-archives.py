@@ -31,6 +31,7 @@ DEFAULT_SOURCE = Path("/Volumes/名称未設定/inhigh-tv-2026-badminton")
 DEFAULT_TARGET = Path("/Volumes/名称未設定/inhigh-tv-2026-badminton-cropped")
 DEFAULT_DATA = Path(__file__).resolve().parents[1] / "data" / "matches.json"
 STOP_GRACE_SECONDS = 15.0
+ROUND_LABELS = frozenset({"1回戦", "2回戦", "3回戦", "4回戦", "準々決勝", "準決勝", "決勝"})
 
 STOP_REQUESTED = False
 ACTIVE_PROCESS: subprocess.Popen[str] | None = None
@@ -263,6 +264,23 @@ def school_name(side: dict[str, Any]) -> str:
     return str(side.get("school") or side.get("name") or "学校名未確認").strip() or "学校名未確認"
 
 
+# BIRD SCOREのGT-23だけは公開match.jsonのroundIdが空欄です。
+# 大会公式トーナメント表で2回戦の位置を照合済みのため、この1件だけ補正します。
+# これ以外の空欄を番号から推測することはしません。
+VERIFIED_ROUND_OVERRIDES = {
+    ("team", "GT-23"): "2回戦",
+}
+
+
+def round_name(entry: dict[str, Any]) -> str:
+    """回戦ディレクトリ名を大会の表記へ正規化する。"""
+    value = str(entry.get("round") or "").strip()
+    if value in ROUND_LABELS:
+        return value
+    key = (str(entry.get("tournamentType") or ""), str(entry.get("matchNo") or ""))
+    return VERIFIED_ROUND_OVERRIDES.get(key, "回戦未確認")
+
+
 def legacy_output_candidates(target: Path, entry: dict[str, Any]) -> list[Path]:
     """旧形式・中間形式を新形式へ移行するための候補。"""
     left, right = match_names(entry)
@@ -296,18 +314,18 @@ def legacy_output_candidates(target: Path, entry: dict[str, Any]) -> list[Path]:
                     target / category / group_name / f"{base}__{suffix}.mp4",
                 ])
     else:
-        round_value = str(entry.get("round") or "回戦未確認")
+        round_value = round_name(entry)
         round_names = [legacy_safe_name(round_value), safe_name(round_value)]
         matchup_names = [
             legacy_safe_name(f"{left}vs{right}"),
             safe_name(f"{left}vs{right}"),
         ]
-        for round_name in round_names:
+        for round_directory_name in round_names:
             for matchup_name in matchup_names:
                 for base in old_bases:
                     candidates.extend([
-                        target / category / round_name / matchup_name / f"{base}.mp4",
-                        target / category / round_name / matchup_name / f"{base}__{suffix}.mp4",
+                        target / category / round_directory_name / matchup_name / f"{base}.mp4",
+                        target / category / round_directory_name / matchup_name / f"{base}__{suffix}.mp4",
                     ])
     return list(dict.fromkeys(candidates))
 
@@ -324,7 +342,7 @@ def output_path(target: Path, entry: dict[str, Any], used: set[Path]) -> Path:
         directory = target / category / group_directory
     else:
         base = safe_name(f"{left}vs{right}")
-        round_directory = safe_name(str(entry.get("round") or "回戦未確認"))
+        round_directory = safe_name(round_name(entry))
         directory = target / category / round_directory
     candidate = directory / f"{base}.mp4"
     if candidate not in used:
@@ -725,6 +743,15 @@ def main() -> int:
         ffprobe = find_tool("ffprobe") if not args.dry_run else None
         data = json.loads(args.data.read_text(encoding="utf-8"))
         jobs = build_jobs(data, args.source, args.target, ffprobe)
+        unresolved_rounds = [
+            f"{job.entry.get('tournamentType')} {job.entry.get('matchNo')} ({job.entry.get('id')})"
+            for job in jobs
+            if round_name(job.entry) == "回戦未確認"
+        ]
+        if unresolved_rounds:
+            sample = "、".join(unresolved_rounds[:5])
+            suffix = "" if len(unresolved_rounds) <= 5 else f" ほか{len(unresolved_rounds) - 5}件"
+            raise RuntimeError(f"回戦未確認の試合があるため開始しません: {sample}{suffix}")
     except (OSError, ValueError, json.JSONDecodeError, RuntimeError, subprocess.CalledProcessError) as error:
         print(f"準備に失敗しました: {error}", file=sys.stderr)
         return 2
