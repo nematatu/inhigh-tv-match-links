@@ -30,6 +30,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--data", type=Path, default=DEFAULT_DATA, help="試合データJSON")
     parser.add_argument("--reencode", action="store_true", help="フレーム単位で正確に切り出す（非常に時間がかかります）")
     parser.add_argument("--dry-run", action="store_true", help="実行せず、生成予定だけ表示")
+    parser.add_argument("--workers", type=int, default=1, help="処理分割数（外付けHDDでは通常1〜4）")
+    parser.add_argument("--worker", type=int, default=0, help="この処理の番号（0からworkers-1）")
     return parser.parse_args()
 
 
@@ -118,6 +120,9 @@ def ffmpeg_command(source: Path, output: Path, start: float, duration: float, re
 
 def main() -> int:
     args = parse_args()
+    if args.workers < 1 or args.worker < 0 or args.worker >= args.workers:
+        print("--worker は 0 以上 --workers 未満で指定してください。", file=sys.stderr)
+        return 2
     if not args.data.is_file():
         print(f"データがありません: {args.data}", file=sys.stderr)
         return 2
@@ -171,7 +176,10 @@ def main() -> int:
             used.add(output)
             jobs.append((entry, source, output, start, end - start))
 
-    print(f"生成対象: {len(jobs)}件")
+    total_jobs = len(jobs)
+    if args.workers > 1:
+        jobs = [job for index, job in enumerate(jobs) if index % args.workers == args.worker]
+    print(f"生成対象: {len(jobs)}件（全体 {total_jobs}件 / 分割 {args.worker + 1}/{args.workers}）")
     if args.dry_run:
         for entry, source, output, start, duration in jobs:
             print(f"{entry.get('category')} {entry.get('matchNo')} {entry.get('orderName')} {start:.0f}s {duration:.0f}s -> {output}")
@@ -211,7 +219,8 @@ def main() -> int:
             "status": "created",
         })
 
-    manifest_path = args.target / "match-crops.json"
+    manifest_name = "match-crops.json" if args.workers == 1 else f"match-crops-worker-{args.worker + 1}.json"
+    manifest_path = args.target / manifest_name
     manifest_path.write_text(json.dumps({"source": str(args.source), "matches": manifest}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(f"完了: 新規 {completed}件 / 既存 {skipped}件 / 対象 {len(jobs)}件")
     return 0 if completed + skipped == len(jobs) else 1
