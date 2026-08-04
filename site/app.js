@@ -14,6 +14,7 @@ const elements = {
   court: document.querySelector("#court-filter"),
   search: document.querySelector("#search-filter"),
   availableOnly: document.querySelector("#available-only"),
+  reset: document.querySelector("#reset-filters"),
   total: document.querySelector("#count-total"),
   available: document.querySelector("#count-available"),
   notPlayed: document.querySelector("#count-not-played"),
@@ -61,6 +62,19 @@ function statusLabel(entry) {
   return "動画リンクあり";
 }
 
+const CATEGORY_LABELS = {
+  MS: "MS（男子シングルス）",
+  WS: "WS（女子シングルス）",
+  MD: "MD（男子ダブルス）",
+  WD: "WD（女子ダブルス）",
+  男子: "男子団体",
+  女子: "女子団体",
+};
+
+function categoryLabel(value) {
+  return CATEGORY_LABELS[value] || value || "種目未確認";
+}
+
 function typeLabel(entry) {
   return entry.tournamentType === "team" ? "団体" : "個人";
 }
@@ -90,6 +104,22 @@ function filteredMatches() {
     if (query && !searchableText(entry).includes(query)) return false;
     return true;
   });
+}
+
+function filterSummary() {
+  const type = elements.type.value === "all" ? "全種別" : elements.type.value === "team" ? "団体" : "個人";
+  const category = elements.category.value === "all" ? "全種目" : categoryLabel(elements.category.value);
+  const date = elements.date.value === "all" ? "全日付" : dateLabel(elements.date.value);
+  const court = elements.court.value === "all" ? "全コート" : `${elements.court.value}コート`;
+  const availability = elements.availableOnly.checked ? "動画リンクありのみ" : "状態すべて";
+  return `${type} / ${category} / ${date} / ${court} / ${availability}`;
+}
+
+function updateVisibleStats(matches) {
+  elements.total.textContent = matches.length.toLocaleString("ja-JP");
+  elements.available.textContent = matches.filter((entry) => entry.status === "available").length.toLocaleString("ja-JP");
+  elements.notPlayed.textContent = matches.filter((entry) => entry.status === "not_played").length.toLocaleString("ja-JP");
+  elements.unavailable.textContent = matches.filter((entry) => entry.status === "unavailable").length.toLocaleString("ja-JP");
 }
 
 function appendText(parent, tagName, className, text) {
@@ -228,6 +258,7 @@ function renderGroup(entries) {
 
 function render() {
   const matches = filteredMatches();
+  updateVisibleStats(matches);
   elements.list.replaceChildren();
   if (!matches.length) {
     appendText(elements.list, "p", "empty-state", "条件に一致する試合がありません。");
@@ -236,19 +267,28 @@ function render() {
     const groups = groupMatches(matches);
     groups.forEach((group) => fragment.append(renderGroup(group)));
     elements.list.append(fragment);
-    elements.summary.textContent = `${matches.length.toLocaleString("ja-JP")}件表示 / ${groups.length.toLocaleString("ja-JP")}グループ / 全${state.matches.length.toLocaleString("ja-JP")}件`;
+    elements.summary.textContent = `${matches.length.toLocaleString("ja-JP")}件表示 / ${groups.length.toLocaleString("ja-JP")}グループ / 全データ${state.matches.length.toLocaleString("ja-JP")}件 · 条件: ${filterSummary()}`;
     return;
   }
-  elements.summary.textContent = `${matches.length.toLocaleString("ja-JP")}件表示 / 全${state.matches.length.toLocaleString("ja-JP")}件`;
+  elements.summary.textContent = `${matches.length.toLocaleString("ja-JP")}件表示 / 全データ${state.matches.length.toLocaleString("ja-JP")}件 · 条件: ${filterSummary()}`;
 }
 
 function initialiseFilters() {
-  setOptions(elements.category, state.matches.map((entry) => entry.category), (value) => value || "種目未確認");
+  setOptions(elements.category, state.matches.map((entry) => entry.category), categoryLabel);
   setOptions(elements.date, state.matches.map((entry) => entry.date), dateLabel);
   setOptions(elements.court, state.matches.map((entry) => entry.court), (value) => `${value}コート`);
   [elements.type, elements.category, elements.date, elements.court, elements.search, elements.availableOnly].forEach((element) => {
     element.addEventListener("input", render);
     element.addEventListener("change", render);
+  });
+  elements.reset.addEventListener("click", () => {
+    elements.type.value = "all";
+    elements.category.value = "all";
+    elements.date.value = "all";
+    elements.court.value = "all";
+    elements.search.value = "";
+    elements.availableOnly.checked = false;
+    render();
   });
 }
 
@@ -258,11 +298,6 @@ async function load() {
     if (!response.ok) throw new Error(`データ取得に失敗しました（${response.status}）`);
     state.data = await response.json();
     state.matches = Array.isArray(state.data.matches) ? state.data.matches : [];
-    const counts = state.data.counts || {};
-    elements.total.textContent = Number(counts.total || state.matches.length).toLocaleString("ja-JP");
-    elements.available.textContent = Number(counts.available || 0).toLocaleString("ja-JP");
-    elements.notPlayed.textContent = Number(counts.notPlayed || 0).toLocaleString("ja-JP");
-    elements.unavailable.textContent = Number(counts.unavailable || 0).toLocaleString("ja-JP");
     if (state.data.generatedAt) {
       elements.generatedAt.textContent = `データ生成日時: ${new Date(state.data.generatedAt).toLocaleString("ja-JP")}`;
     }

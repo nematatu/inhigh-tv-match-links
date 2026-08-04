@@ -223,6 +223,27 @@ h2 {
   accent-color: var(--brand);
 }
 
+.reset-button {
+  align-self: end;
+  min-height: 42px;
+  padding: 8px 13px;
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+  color: var(--ink);
+  background: #fff;
+  font: inherit;
+  font-size: 0.86rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.reset-button:hover,
+.reset-button:focus-visible {
+  border-color: var(--brand);
+  color: var(--brand-dark);
+  background: #edf3ff;
+}
+
 .stats-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));

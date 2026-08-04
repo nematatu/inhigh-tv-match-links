@@ -49,7 +49,7 @@
           <label>
             種別
             <select id="type-filter">
-              <option value="all">団体・個人</option>
+              <option value="all">すべて（団体・個人）</option>
               <option value="team">団体</option>
               <option value="individual">個人</option>
             </select>
@@ -57,7 +57,7 @@
           <label>
             種目
             <select id="category-filter">
-              <option value="all">すべて</option>
+              <option value="all">すべて（男女・単複）</option>
             </select>
           </label>
           <label>
@@ -80,14 +80,15 @@
             <input id="available-only" type="checkbox" />
             動画リンクありだけ表示
           </label>
+          <button id="reset-filters" class="reset-button" type="button">条件をリセット</button>
         </div>
       </section>
 
       <section class="stats-grid" aria-label="件数">
-        <div class="stat-card"><span>全試合</span><strong id="count-total">—</strong></div>
-        <div class="stat-card stat-card--available"><span>動画リンクあり</span><strong id="count-available">—</strong></div>
-        <div class="stat-card stat-card--pending"><span>未実施</span><strong id="count-not-played">—</strong></div>
-        <div class="stat-card stat-card--unavailable"><span>動画未確認</span><strong id="count-unavailable">—</strong></div>
+        <div class="stat-card"><span>表示中の試合</span><strong id="count-total">—</strong></div>
+        <div class="stat-card stat-card--available"><span>表示中の動画リンク</span><strong id="count-available">—</strong></div>
+        <div class="stat-card stat-card--pending"><span>表示中の未実施</span><strong id="count-not-played">—</strong></div>
+        <div class="stat-card stat-card--unavailable"><span>表示中の動画未確認</span><strong id="count-unavailable">—</strong></div>
       </section>
 
       <section id="matches" class="match-list" aria-live="polite">
