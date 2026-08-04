@@ -419,6 +419,7 @@ function buildEntry(bird, ref, order, archiveByKey) {
   let status = "available";
   let statusReason = "";
   let startSeconds = null;
+  let endSeconds = null;
   let archiveUrl = null;
 
   if (!hasStartTime) {
@@ -433,11 +434,18 @@ function buildEntry(bird, ref, order, archiveByKey) {
   } else {
     const offset = (startTime - Date.parse(archive.programDateTime)) / 1000;
     const duration = Number(archive.durationSeconds);
+    const endTime = Number(order?.endTime);
+    const hasEndTime = Number.isFinite(endTime) && endTime > startTime;
+    const endOffset = hasEndTime ? (endTime - Date.parse(archive.programDateTime)) / 1000 : null;
     if (!Number.isFinite(offset) || offset < 0 || (Number.isFinite(duration) && duration > 0 && offset > duration)) {
       status = "unavailable";
       statusReason = "試合開始時刻と公式アーカイブの範囲が一致しませんでした。";
+    } else if (!hasEndTime || !Number.isFinite(endOffset) || endOffset <= offset) {
+      status = "unavailable";
+      statusReason = "BIRD SCOREの試合終了時刻を確認できませんでした。";
     } else {
       startSeconds = Math.floor(offset);
+      endSeconds = Math.ceil(endOffset);
       archiveUrl = `${archive.archiveUrl}?start=${startSeconds}`;
     }
   }
@@ -495,6 +503,10 @@ function buildEntry(bird, ref, order, archiveByKey) {
     statusReason,
     startTime: hasStartTime ? new Date(startTime).toISOString() : null,
     startSeconds,
+    endTime: Number.isFinite(Number(order?.endTime)) && Number(order?.endTime) > 0
+      ? new Date(Number(order.endTime)).toISOString()
+      : null,
+    endSeconds,
     archiveId: archive?.archiveId || null,
     archiveUrl,
     archiveTitle: archive?.title || "",

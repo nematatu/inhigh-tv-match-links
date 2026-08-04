@@ -38,6 +38,8 @@ ETA_MIN_SAMPLES = 6
 ETA_SAMPLE_WINDOW = 12
 ETA_MIN_SAMPLE_INTERVAL = 3.0
 CURRENT_ETA_WARMUP_SECONDS = 10.0
+OUTPUT_DURATION_TOLERANCE_SECONDS = 5.0
+MATCH_BUFFER_SECONDS = 60.0
 
 STOP_REQUESTED = False
 STOP_SIGNAL: int | None = None
@@ -510,10 +512,22 @@ def build_jobs(data: dict[str, Any], source_root: Path, target: Path, ffprobe: s
             # ローカル保存版の末尾を切り落とさないための余裕。ffmpegはEOFで停止します。
             archive_duration += 60.0
         ordered = sorted(group, key=lambda entry: float(entry["startSeconds"]))
-        for index, entry in enumerate(ordered):
-            start = float(entry["startSeconds"])
-            next_start = float(ordered[index + 1]["startSeconds"]) if index + 1 < len(ordered) else archive_duration
-            end = min(archive_duration, next_start)
+        for entry in ordered:
+            raw_start = float(entry["startSeconds"])
+            raw_end = entry.get("endSeconds")
+            try:
+                explicit_end = float(raw_end) if raw_end is not None else None
+            except (TypeError, ValueError):
+                explicit_end = None
+            if explicit_end is None or explicit_end <= raw_start:
+                print(
+                    f"警告: 試合終了時刻が確認できないため対象外: "
+                    f"{entry.get('id')} ({entry.get('date')} コート{entry.get('court')} {entry.get('matchNo')} {entry.get('orderName')})",
+                    file=sys.stderr,
+                )
+                continue
+            start = max(0.0, raw_start - MATCH_BUFFER_SECONDS)
+            end = min(archive_duration, explicit_end + MATCH_BUFFER_SECONDS)
             if start < 0 or end <= start:
                 print(f"警告: 時間範囲が不正なため対象外: {entry.get('id')}", file=sys.stderr)
                 continue
@@ -535,34 +549,48 @@ def find_legacy_output(target: Path, job: Job, used: set[Path]) -> Path | None:
     return None
 
 
-def completed_output_count(jobs: list[Job], target: Path) -> int:
+def output_matches_job(path: Path, job: Job, ffprobe: str | None) -> bool:
+    """既存ファイルが今回の開始・終了時刻で作られたものか確認する。"""
+    try:
+        if not path.is_file() or path.stat().st_size <= 0:
+            return False
+        if ffprobe is None:
+            return True
+        actual = duration_seconds(path, ffprobe)
+        return abs(actual - job.duration) <= OUTPUT_DURATION_TOLERANCE_SECONDS
+    except (OSError, ValueError, subprocess.CalledProcessError):
+        return False
+
+
+def completed_output_count(jobs: list[Job], target: Path, ffprobe: str | None = None) -> int:
     """新形式と旧形式を合わせた再開可能な完成件数を数える。"""
     count = 0
     legacy_used: set[Path] = set()
     for job in jobs:
-        try:
-            if job.output.is_file() and job.output.stat().st_size > 0:
-                count += 1
-                continue
-        except OSError:
-            pass
+        if output_matches_job(job.output, job, ffprobe):
+            count += 1
+            continue
         legacy = find_legacy_output(target, job, legacy_used)
-        if legacy is not None:
+        if legacy is not None and output_matches_job(legacy, job, ffprobe):
             legacy_used.add(legacy)
             count += 1
     return count
 
 
-def migrate_legacy_outputs(jobs: list[Job], target: Path) -> tuple[int, list[str]]:
+def migrate_legacy_outputs(jobs: list[Job], target: Path, ffprobe: str | None) -> tuple[int, list[str]]:
     """旧平置き完成動画を新しい分類ディレクトリへコピーする（旧ファイルは残す）。"""
     migrated = 0
     errors: list[str] = []
     legacy_used: set[Path] = set()
     for job in jobs:
+        if output_matches_job(job.output, job, ffprobe):
+            continue
+        # 長さ不一致の新形式ファイルは後段で退避して再生成する。ここで
+        # 旧形式をコピーして上書きしないため、既存の派生動画を残す。
         if job.output.is_file() and job.output.stat().st_size > 0:
             continue
         legacy = find_legacy_output(target, job, legacy_used)
-        if legacy is None:
+        if legacy is None or not output_matches_job(legacy, job, ffprobe):
             continue
         legacy_used.add(legacy)
         job.output.parent.mkdir(parents=True, exist_ok=True)
@@ -578,6 +606,20 @@ def migrate_legacy_outputs(jobs: list[Job], target: Path) -> tuple[int, list[str
             except OSError:
                 pass
     return migrated, errors
+
+
+def preserve_mismatched_output(path: Path, job: Job, ffprobe: str) -> Path | None:
+    """切り出し時間が違う既存の派生動画を消さずに退避する。"""
+    if not path.is_file() or path.stat().st_size <= 0 or output_matches_job(path, job, ffprobe):
+        return None
+    index = 1
+    while True:
+        suffix = ".old-duration" if index == 1 else f".old-duration-{index}"
+        backup = path.with_name(f"{path.stem}{suffix}{path.suffix}")
+        if not backup.exists():
+            path.replace(backup)
+            return backup
+        index += 1
 
 
 def ffmpeg_command(ffmpeg: str, job: Job, temporary: Path, reencode: bool) -> list[str]:
@@ -899,7 +941,7 @@ def main() -> int:
         return 2
 
     media_total = sum(job.duration for job in jobs)
-    existing_count = completed_output_count(jobs, args.target)
+    existing_count = completed_output_count(jobs, args.target, ffprobe)
     print(f"対象: {len(jobs)}件")
     print(f"完了済み: {existing_count}件 / 残り: {len(jobs) - existing_count}件")
     print(f"種目別: {category_summary(jobs)}")
@@ -925,21 +967,21 @@ def main() -> int:
     else:
         LOGGER.write("caffeinateが見つからないため、自動スリープ抑止は利用していません。")
     LOGGER.write("出力構成を確認中（既存の旧形式動画は削除せず、新しい分類先へコピーします）")
-    migrated_count, migration_errors = migrate_legacy_outputs(jobs, args.target)
+    migrated_count, migration_errors = migrate_legacy_outputs(jobs, args.target, ffprobe)
     if migrated_count:
         LOGGER.write(f"旧形式から新形式へコピー: {migrated_count}件（旧ファイルは残しています）")
     for migration_error in migration_errors:
         LOGGER.write(f"旧形式のコピー失敗: {migration_error}")
-    existing_count = sum(1 for job in jobs if job.output.is_file() and job.output.stat().st_size > 0)
+    existing_count = sum(1 for job in jobs if output_matches_job(job.output, job, ffprobe))
     state = create_state(args, jobs)
     state["completed"] = existing_count
     for item, job in zip(state["jobs"], jobs):
-        if job.output.is_file() and job.output.stat().st_size > 0:
+        if output_matches_job(job.output, job, ffprobe):
             item["status"] = "existing"
     update_state(state, state_path)
 
     started = time.monotonic()
-    media_done = sum(job.duration for job in jobs if job.output.is_file() and job.output.stat().st_size > 0)
+    media_done = sum(job.duration for job in jobs if output_matches_job(job.output, job, ffprobe))
     run_media_done = 0.0
     speed_estimator = SpeedEstimator()
     last_progress = 0.0
@@ -950,7 +992,7 @@ def main() -> int:
     LOGGER.write(f"出力: {args.target} / 状態: {state_path}")
     try:
         for index, (item, job) in enumerate(zip(state["jobs"], jobs), start=1):
-            if job.output.is_file() and job.output.stat().st_size > 0:
+            if output_matches_job(job.output, job, ffprobe):
                 continue
             if STOP_REQUESTED:
                 break
@@ -958,6 +1000,20 @@ def main() -> int:
             state["current"] = relative_output(args.target, job.output)
             update_state(state, state_path)
             job.output.parent.mkdir(parents=True, exist_ok=True)
+            if job.output.is_file() and not output_matches_job(job.output, job, ffprobe):
+                try:
+                    backup = preserve_mismatched_output(job.output, job, ffprobe)
+                except OSError as error:
+                    item["status"] = "failed"
+                    state["failed"] += 1
+                    update_state(state, state_path)
+                    LOGGER.write(f"既存の長さ不一致ファイルを退避できないため処理を中止: {job.output.name} ({error})")
+                    continue
+                if backup is not None:
+                    LOGGER.write(
+                        f"終了時刻修正のため既存動画を退避しました: "
+                        f"{relative_output(args.target, job.output)} -> {relative_output(args.target, backup)}"
+                    )
             temporary = job.output.with_name(f"{job.output.stem}.part{job.output.suffix}")
             if temporary.exists():
                 LOGGER.write(f"前回の未完了ファイルを上書きします: {temporary.name}")
