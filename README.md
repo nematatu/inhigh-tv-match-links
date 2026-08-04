@@ -10,6 +10,7 @@
 - `site/`: 日付・種目・回戦順に試合をまとめて表示する静的リンク集（学校名・結果・スコア付き）
 - `tools/build-data.mjs`: BIRD SCORE公開JSONとインハイTV公開API/HLSから対応データを再生成
 - `tools/crop-local-archives.py`: 外付けHDDの元動画を読み取り、試合開始秒ごとの動画を種目別に生成
+- `tools/crop_inhigh_2026.command`: 上記CLIをターミナルから起動するラッパー
 - `data/`: 生成した対応データの正本
 
 ## データ生成
@@ -52,13 +53,50 @@ Android Chromeの拡張機能対応やiOS Safari Web Extensionの配布は、こ
 
 元の年月日・コート別アーカイブは変更せず、読み取り専用の入力として扱います。出力先に `MS/`、`MD/`、`WS/`、`WD/`、`TEAM-M/`、`TEAM-W/` を作り、BIRD SCOREで確認した開始秒から次の試合開始直前までをMP4として保存します。既存の出力先ファイルがあれば再利用するため、中断後も続きから実行できます。
 
+### ターミナルから実行
+
+外付けHDDを接続した状態で、リポジトリのディレクトリから次を実行してください。標準設定は外付けHDDの読み取り負荷を抑えるため、1本ずつ処理します。
+
+```bash
+./tools/crop_inhigh_2026.command \
+  --source "/Volumes/名称未設定/inhigh-tv-2026-badminton" \
+  --target "/Volumes/名称未設定/inhigh-tv-2026-badminton-cropped"
+```
+
+ラッパーを使わず直接起動する場合は、次の形式でも実行できます。
+
 ```bash
 python3 tools/crop-local-archives.py \
   --source "/Volumes/名称未設定/inhigh-tv-2026-badminton" \
   --target "/Volumes/名称未設定/inhigh-tv-2026-badminton-cropped"
 ```
 
-処理を分割して並列実行する場合は、同じコマンドを `--workers 4 --worker 0` から `--worker 3` まで4本起動します。HDDの速度によっては並列数を増やしても速くならないため、1〜4本の範囲にしてください。
+起動直後に、対象件数・総時間・完了済み件数・残り件数が表示されます。処理中は例えば次のように、件数、件数パーセンテージ、映像時間パーセンテージ、処理速度、残り時間、予測終了時刻を表示します。
+
+```text
+進捗 123/806件 ( 15.3%) / 時間  18.7% | 処理中 選手A-選手B.mp4 | 速度 2.14倍速 | 残り 5時間12分 | 予測終了 2026-08-05 03:18頃 | 経過 1時間02分
+```
+
+ログは出力先の `crop.log`、再開用の状態は `crop-state.json` に保存します。別のターミナルからログを確認する場合は次を実行できます。
+
+```bash
+tail -f "/Volumes/名称未設定/inhigh-tv-2026-badminton-cropped/crop.log"
+```
+
+### 中断と再開
+
+処理中に `Ctrl+C` を押すと、現在のffmpegを停止して終了コード `130` で終了します。作成途中の `.part.mp4` は残しますが、完成ファイルには置き換えません。次回、同じコマンドを実行すると、サイズが0より大きい完成済みMP4を自動的にスキップし、残りから続行します。`.part.mp4` はその試合の再実行時に上書きするため、壊れた途中ファイルを完成品として扱いません。
+
+同じ出力先でCLIを二重起動しないよう `target/.crop.lock` を使用しています。別の処理が実行中の場合は、重複起動せずメッセージを表示して終了します。
+
+実際には処理せず対象件数だけ確認するには、次を使います。
+
+```bash
+./tools/crop_inhigh_2026.command \
+  --source "/Volumes/名称未設定/inhigh-tv-2026-badminton" \
+  --target "/Volumes/名称未設定/inhigh-tv-2026-badminton-cropped" \
+  --dry-run
+```
 
 標準設定は映像を再エンコードせずに切り出すため高速で、元の画質を保ちます。フレーム単位の厳密な境界が必要な場合だけ `--reencode` を付けてください。元フォルダのファイルを削除・上書きする処理はありません。
 
