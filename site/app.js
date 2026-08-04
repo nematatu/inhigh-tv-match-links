@@ -15,10 +15,6 @@ const elements = {
   search: document.querySelector("#search-filter"),
   availableOnly: document.querySelector("#available-only"),
   reset: document.querySelector("#reset-filters"),
-  total: document.querySelector("#count-total"),
-  available: document.querySelector("#count-available"),
-  notPlayed: document.querySelector("#count-not-played"),
-  unavailable: document.querySelector("#count-unavailable"),
   generatedAt: document.querySelector("#generated-at"),
 };
 
@@ -43,17 +39,6 @@ function dateLabel(value) {
   if (!value) return "日付未確認";
   const [, month, day] = String(value).split("-");
   return `${month}/${day}`;
-}
-
-function startTimeLabel(value) {
-  if (!value) return "開始時刻未確認";
-  const date = new Date(value);
-  if (!Number.isFinite(date.getTime())) return "開始時刻未確認";
-  return new Intl.DateTimeFormat("ja-JP", {
-    timeZone: "Asia/Tokyo",
-    hour: "2-digit",
-    minute: "2-digit",
-  }).format(date);
 }
 
 function statusLabel(entry) {
@@ -115,13 +100,6 @@ function filterSummary() {
   return `${type} / ${category} / ${date} / ${court} / ${availability}`;
 }
 
-function updateVisibleStats(matches) {
-  elements.total.textContent = matches.length.toLocaleString("ja-JP");
-  elements.available.textContent = matches.filter((entry) => entry.status === "available").length.toLocaleString("ja-JP");
-  elements.notPlayed.textContent = matches.filter((entry) => entry.status === "not_played").length.toLocaleString("ja-JP");
-  elements.unavailable.textContent = matches.filter((entry) => entry.status === "unavailable").length.toLocaleString("ja-JP");
-}
-
 function resetFilterControls() {
   elements.type.value = "all";
   elements.category.value = "all";
@@ -140,7 +118,7 @@ function appendText(parent, tagName, className, text) {
 }
 
 function groupKey(entry) {
-  return [entry.date, entry.tournamentType, entry.category, entry.court || "unknown"].join("|");
+  return [entry.date, entry.tournamentType, entry.category, entry.round || "round-unknown"].join("|");
 }
 
 function groupMatches(matches) {
@@ -163,16 +141,44 @@ function renderSides(parent, entry) {
     const line = document.createElement("p");
     line.className = "side-line";
     line.textContent = side.name || `${index + 1}チーム`;
+    if (side.school) {
+      const school = document.createElement("span");
+      school.className = "side-school";
+      school.textContent = `学校: ${side.school}`;
+      line.append(" ", school);
+    }
     if (side.players?.length) {
       const players = side.players.map((player) => player.name).filter(Boolean).join("・");
       if (players && players !== side.name) {
         const detail = document.createElement("span");
+        detail.className = "side-players";
         detail.textContent = `（${players}）`;
         line.append(" ", detail);
       }
     }
     parent.append(line);
   });
+}
+
+function resultLabel(entry) {
+  const result = entry.result;
+  if (!result) return "";
+  const losses = (result.reasonsForLoss || []).filter(Boolean);
+  const winner = result.winnerName ? `勝者: ${result.winnerName}` : "結果確認済み";
+  return losses.length ? `${winner} · ${losses.join("・")}` : winner;
+}
+
+function scoreLabel(entry) {
+  const score = entry.score;
+  if (!score?.games?.length) return "";
+  const games = score.games
+    .filter((game) => game.some((point) => Number.isFinite(point)))
+    .map((game) => `${game[0] ?? "-"}-${game[1] ?? "-"}`);
+  if (!games.length) return "";
+  const gameWins = (score.gameWins || []).every((wins) => Number.isFinite(wins))
+    ? `（ゲーム ${score.gameWins.join("-")}）`
+    : "";
+  return `スコア: ${games.join(" / ")} ${gameWins}`.trim();
 }
 
 function renderCard(entry) {
@@ -182,13 +188,21 @@ function renderCard(entry) {
   const meta = document.createElement("div");
   meta.className = "match-card__meta";
   appendText(meta, "span", "match-card__eyebrow", `${typeLabel(entry)} · ${entry.category || "種目未確認"}`);
-  appendText(meta, "strong", "match-card__number", `${entry.matchNo || "試合番号未確認"}${entry.orderName ? ` · ${entry.orderName}` : ""}`);
-  appendText(meta, "span", "match-card__detail", `${startTimeLabel(entry.startTime)} · ${entry.round || "ラウンド未確認"}`);
+  appendText(meta, "span", "match-card__detail", `${dateLabel(entry.date)}${entry.court ? ` · ${entry.court}コート` : ""}`);
 
   const sides = document.createElement("div");
   sides.className = "match-card__sides";
   appendText(sides, "span", "match-card__detail", entry.eventTitle || entry.tournamentName || "");
   renderSides(sides, entry);
+  const result = resultLabel(entry);
+  const score = scoreLabel(entry);
+  if (result || score) {
+    const resultBlock = document.createElement("div");
+    resultBlock.className = "match-card__result";
+    if (result) appendText(resultBlock, "p", "result-line", result);
+    if (score) appendText(resultBlock, "p", "score-line", score);
+    sides.append(resultBlock);
+  }
 
   const action = document.createElement("div");
   action.className = "match-card__action";
@@ -236,27 +250,15 @@ function renderGroup(entries) {
     headingText,
     "h3",
     "match-group__title",
-    `${dateLabel(first.date)} · ${typeLabel(first)} · ${first.eventTitle || first.category || "種目未確認"} · ${first.court ? `${first.court}コート` : "コート未確認"}`,
+    `${dateLabel(first.date)} · ${typeLabel(first)} · ${first.eventTitle || first.category || "種目未確認"} · ${first.round || "回戦未確認"}`,
   );
-  const availableCount = entries.filter((entry) => entry.status === "available").length;
   appendText(
     headingText,
     "p",
     "match-group__meta",
-    `${entries.length.toLocaleString("ja-JP")}試合 · 動画リンク ${availableCount.toLocaleString("ja-JP")}件 · ${first.archiveTitle || "公式アーカイブ未確認"}`,
+    `${entries.length.toLocaleString("ja-JP")}試合`,
   );
   heading.append(headingText);
-
-  const archive = entries.find((entry) => entry.archiveUrl)?.archiveUrl;
-  if (archive) {
-    const archiveLink = document.createElement("a");
-    archiveLink.className = "match-group__archive";
-    archiveLink.href = archive.split("?")[0];
-    archiveLink.target = "_blank";
-    archiveLink.rel = "noreferrer";
-    archiveLink.textContent = "コートのアーカイブ";
-    heading.append(archiveLink);
-  }
 
   const list = document.createElement("div");
   list.className = "match-group__list";
@@ -267,7 +269,6 @@ function renderGroup(entries) {
 
 function render() {
   const matches = filteredMatches();
-  updateVisibleStats(matches);
   elements.list.replaceChildren();
   if (!matches.length) {
     appendText(elements.list, "p", "empty-state", "条件に一致する試合がありません。");

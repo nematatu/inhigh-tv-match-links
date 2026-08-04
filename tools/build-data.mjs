@@ -179,8 +179,10 @@ function flattenIndividualTeams(teams) {
 function teamSide(team, teamIndex, match, organizations, individualTeams, tournamentType) {
   if (tournamentType === "individual") {
     const found = individualTeams.get(team?.teamId);
+    const schools = [...new Set((found?.players || []).map((player) => player.belong).filter(Boolean))];
     return {
       name: found?.players?.map((player) => player.name).filter(Boolean).join("・") || "",
+      school: schools.join("・"),
       players: found?.players || [],
     };
   }
@@ -191,6 +193,7 @@ function teamSide(team, teamIndex, match, organizations, individualTeams, tourna
     .filter((player) => player.name);
   return {
     name: organization?.name || "",
+    school: organization?.name || "",
     players,
   };
 }
@@ -448,6 +451,30 @@ function buildEntry(bird, ref, order, archiveByKey) {
     bird.teams,
     bird.tournamentType,
   ));
+  const winnerNumber = Number(order?.winner);
+  const winnerIndex = winnerNumber === 0 || winnerNumber === 1 ? winnerNumber : null;
+  const reasonsForLoss = teams.map((team) => String(team?.reasonForLoss || "").trim());
+  const result = winnerIndex !== null || reasonsForLoss.some(Boolean)
+    ? {
+      winnerIndex,
+      winnerName: winnerIndex === null ? "" : sides[winnerIndex]?.name || "",
+      reasonsForLoss,
+    }
+    : null;
+  const points = teams.map((team) => asArray(team?.gameInfos).map((game) => {
+    const point = Number(game?.point);
+    return Number.isFinite(point) ? point : null;
+  }));
+  const pointCount = Math.max(0, ...points.map((side) => side.length));
+  const score = pointCount > 0
+    ? {
+      gameWins: teams.map((team) => {
+        const wins = Number(team?.winGameCount);
+        return Number.isFinite(wins) ? wins : null;
+      }),
+      games: Array.from({ length: pointCount }, (_, index) => [points[0]?.[index] ?? null, points[1]?.[index] ?? null]),
+    }
+    : null;
 
   return {
     id: `${bird.tournamentType}:${ref.matchId}:${ref.orderId}`,
@@ -472,14 +499,33 @@ function buildEntry(bird, ref, order, archiveByKey) {
     archiveUrl,
     archiveTitle: archive?.title || "",
     sides,
+    result,
+    score,
   };
 }
 
+const ROUND_ORDER = new Map([
+  ["1回戦", 1],
+  ["2回戦", 2],
+  ["3回戦", 3],
+  ["4回戦", 4],
+  ["準々決勝", 5],
+  ["準決勝", 6],
+  ["決勝", 7],
+]);
+
 function sortEntries(a, b) {
-  return [a.date, Number(a.court) || 999, a.startTime || "9999", a.matchNo, a.orderName]
-    .map(String)
-    .join("|")
-    .localeCompare([b.date, Number(b.court) || 999, b.startTime || "9999", b.matchNo, b.orderName].map(String).join("|"), "ja", { numeric: true });
+  const key = (entry) => [
+    entry.date,
+    entry.tournamentType,
+    entry.category,
+    ROUND_ORDER.get(entry.round) || 999,
+    entry.startTime || "9999",
+    Number(entry.court) || 999,
+    entry.matchNo,
+    entry.orderName,
+  ];
+  return key(a).map(String).join("|").localeCompare(key(b).map(String).join("|"), "ja", { numeric: true });
 }
 
 async function main() {
