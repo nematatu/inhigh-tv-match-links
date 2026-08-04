@@ -77,6 +77,7 @@ class TerminalUI:
     def __init__(self, enabled: bool):
         self.enabled = enabled
         self.rendered_lines = 0
+        self.cursor_hidden = False
 
     def _home(self) -> None:
         if self.rendered_lines > 1:
@@ -104,6 +105,9 @@ class TerminalUI:
     def event(self, message: str) -> None:
         if self.enabled:
             self._clear()
+            if self.cursor_hidden:
+                sys.stdout.write("\033[?25h")
+                self.cursor_hidden = False
         print(message, flush=True)
 
     def progress(self, message: str, details: dict[str, Any]) -> None:
@@ -112,44 +116,36 @@ class TerminalUI:
             print(f"[{timestamp}] {message}", flush=True)
             return
 
-        columns = shutil.get_terminal_size((100, 24)).columns
-        inner = max(64, min(columns - 2, 116))
-        current = self._clip(details["current"], inner - 8)
-        title = "インハイTV 試合別動画切り出し"
+        columns = max(40, shutil.get_terminal_size((100, 24)).columns - 1)
+        if not self.cursor_hidden:
+            sys.stdout.write("\033[?25l")
+            self.cursor_hidden = True
+        current = self._clip(details["current"], columns - 20)
         lines = [
-            "┌─ " + title + " " + "─" * max(0, inner - len(title) - 4) + "┐",
-            self._row(
-                f"完了 {details['completed']}/{details['total']}件 ({details['count_percent']:4.1f}%)"
-                f"  |  映像 {details['time_percent']:4.1f}%  |  速度 {details['speed']:6.2f}倍速",
-                inner,
-            ),
-            self._row(f"現在 {details['category']} / {current}", inner),
-            self._row(
-                f"動画残り {details['current_remaining_text']}  |  動画終了 {details['current_eta']}",
-                inner,
-            ),
-            self._row(
-                f"全体残り {details['overall_remaining_text']}  |  全体終了 {details['overall_eta']}  |  経過 {details['elapsed_text']}",
-                inner,
-            ),
-            "└" + "─" * inner + "┘",
+            "インハイTV 試合別動画切り出し",
+            f"全体進捗: {details['completed']}/{details['total']}件 ({details['count_percent']:4.1f}%)"
+            f" | 映像 {details['time_percent']:4.1f}% | 速度 {details['speed']:6.2f}倍速",
+            f"処理中動画: {details['category']}/{current} | 動画進捗 {details['current_percent']:4.1f}%"
+            f" | 動画残り {details['current_remaining_text']}",
+            f"全体処理の終了予測: {details['overall_eta']} | 全体残り {details['overall_remaining_text']}",
+            f"経過: {details['elapsed_text']} | Ctrl+Cで中断・次回再開",
         ]
         if self.rendered_lines:
             self._home()
         for index, line in enumerate(lines):
-            sys.stdout.write("\033[2K\r" + line)
+            sys.stdout.write("\033[2K\r" + self._clip(line, columns))
             if index < len(lines) - 1:
                 sys.stdout.write("\n")
         sys.stdout.flush()
         self.rendered_lines = len(lines)
 
-    @staticmethod
-    def _row(value: str, inner: int) -> str:
-        return "│ " + value[: max(0, inner - 2)].ljust(max(0, inner - 2)) + " │"
-
     def finish(self) -> None:
         if self.enabled and self.rendered_lines:
             self._clear()
+        if self.enabled and self.cursor_hidden:
+            sys.stdout.write("\033[?25h")
+            sys.stdout.flush()
+            self.cursor_hidden = False
 
 
 class OutputLock:
@@ -248,12 +244,42 @@ def duration_seconds(path: Path, ffprobe: str) -> float:
     return float(result.stdout.strip())
 
 
-def output_path(target: Path, entry: dict[str, Any], used: set[Path]) -> Path:
+def match_names(entry: dict[str, Any]) -> tuple[str, str]:
     sides = entry.get("sides") or []
     left = side_name(sides[0]) if len(sides) > 0 else "対戦者未確認"
     right = side_name(sides[1]) if len(sides) > 1 else "対戦者未確認"
+    return left, right
+
+
+def school_name(side: dict[str, Any]) -> str:
+    return str(side.get("school") or side.get("name") or "学校名未確認").strip() or "学校名未確認"
+
+
+def legacy_output_candidates(target: Path, entry: dict[str, Any]) -> list[Path]:
+    """旧形式（種目直下のMP4）を新形式へ移行するための候補。"""
+    left, right = match_names(entry)
     base = safe_name(f"{left}-{right}")
     directory = target / category_dir(entry)
+    suffix = safe_name(f"{entry.get('matchNo') or '試合'}-{entry.get('orderName') or 'order'}")
+    candidates = [directory / f"{base}.mp4", directory / f"{base}__{suffix}.mp4"]
+    candidates.extend(sorted(directory.glob(f"{base}__*.mp4")))
+    return list(dict.fromkeys(candidates))
+
+
+def output_path(target: Path, entry: dict[str, Any], used: set[Path]) -> Path:
+    left, right = match_names(entry)
+    base = safe_name(f"{left}-{right}")
+    category = category_dir(entry)
+    sides = entry.get("sides") or []
+    if entry.get("tournamentType") == "team":
+        left_school = school_name(sides[0]) if len(sides) > 0 else "学校名未確認"
+        right_school = school_name(sides[1]) if len(sides) > 1 else "学校名未確認"
+        group_directory = safe_name(f"{left_school}vs{right_school}")
+        directory = target / category / group_directory
+    else:
+        round_directory = safe_name(str(entry.get("round") or "回戦未確認"))
+        group_directory = safe_name(f"{left}vs{right}")
+        directory = target / category / round_directory / group_directory
     candidate = directory / f"{base}.mp4"
     if candidate not in used:
         return candidate
@@ -311,6 +337,63 @@ def build_jobs(data: dict[str, Any], source_root: Path, target: Path, ffprobe: s
             used.add(output)
             jobs.append(Job(entry=entry, source=source, output=output, start=start, duration=end - start))
     return jobs
+
+
+def find_legacy_output(target: Path, job: Job, used: set[Path]) -> Path | None:
+    for candidate in legacy_output_candidates(target, job.entry):
+        if candidate in used or not candidate.is_file() or candidate.name.startswith("._"):
+            continue
+        try:
+            if candidate.stat().st_size > 0:
+                return candidate
+        except OSError:
+            continue
+    return None
+
+
+def completed_output_count(jobs: list[Job], target: Path) -> int:
+    """新形式と旧形式を合わせた再開可能な完成件数を数える。"""
+    count = 0
+    legacy_used: set[Path] = set()
+    for job in jobs:
+        try:
+            if job.output.is_file() and job.output.stat().st_size > 0:
+                count += 1
+                continue
+        except OSError:
+            pass
+        legacy = find_legacy_output(target, job, legacy_used)
+        if legacy is not None:
+            legacy_used.add(legacy)
+            count += 1
+    return count
+
+
+def migrate_legacy_outputs(jobs: list[Job], target: Path) -> tuple[int, list[str]]:
+    """旧平置き完成動画を新しい分類ディレクトリへコピーする（旧ファイルは残す）。"""
+    migrated = 0
+    errors: list[str] = []
+    legacy_used: set[Path] = set()
+    for job in jobs:
+        if job.output.is_file() and job.output.stat().st_size > 0:
+            continue
+        legacy = find_legacy_output(target, job, legacy_used)
+        if legacy is None:
+            continue
+        legacy_used.add(legacy)
+        job.output.parent.mkdir(parents=True, exist_ok=True)
+        temporary = job.output.with_name(f".{job.output.name}.legacy-{os.getpid()}.part")
+        try:
+            shutil.copy2(legacy, temporary)
+            temporary.replace(job.output)
+            migrated += 1
+        except OSError as error:
+            errors.append(f"{legacy} -> {job.output}: {error}")
+            try:
+                temporary.unlink()
+            except OSError:
+                pass
+    return migrated, errors
 
 
 def ffmpeg_command(ffmpeg: str, job: Job, temporary: Path, reencode: bool) -> list[str]:
@@ -392,10 +475,12 @@ def progress_details(
     time_percent = media_done / media_total * 100 if media_total else count_percent
     overall_remaining = max(0.0, media_total - media_done)
     if current_duration is None or current_done is None:
+        current_percent = 0.0
         current_remaining_text = "-"
         current_eta = "-"
     else:
         current_remaining = max(0.0, current_duration - current_done)
+        current_percent = current_done / current_duration * 100 if current_duration > 0 else 100.0
         current_speed = current_done / current_elapsed if current_elapsed and current_elapsed > 0 else 0.0
         current_remaining_text = format_seconds(current_remaining / current_speed) if current_speed > 0 else "計算中"
         current_eta = format_eta(current_remaining, current_speed)
@@ -407,6 +492,7 @@ def progress_details(
         "current": current,
         "category": category,
         "speed": speed,
+        "current_percent": current_percent,
         "current_remaining_text": current_remaining_text,
         "current_eta": current_eta,
         "overall_remaining_text": format_seconds(overall_remaining / speed) if speed > 0 else "計算中",
@@ -443,8 +529,8 @@ def progress_line(
         f"進捗 {details['completed']}/{details['total']}件 ({details['count_percent']:5.1f}%) "
         f"/ 時間 {details['time_percent']:5.1f}% | 処理中 {details['current']} | "
         f"速度 {details['speed']:4.2f}倍速 | "
-        f"動画残り {details['current_remaining_text']} / 動画終了 {details['current_eta']} | "
-        f"全体残り {details['overall_remaining_text']} / 全体終了 {details['overall_eta']} | "
+        f"動画残り {details['current_remaining_text']} | "
+        f"全体処理終了予測 {details['overall_eta']} / 全体残り {details['overall_remaining_text']} | "
         f"経過 {details['elapsed_text']}"
     )
 
@@ -535,7 +621,7 @@ def category_summary(jobs: list[Job]) -> str:
 
 def create_state(args: argparse.Namespace, jobs: list[Job]) -> dict[str, Any]:
     return {
-        "schemaVersion": 2,
+        "schemaVersion": 3,
         "status": "running",
         "startedAt": datetime.now().astimezone().isoformat(),
         "updatedAt": datetime.now().astimezone().isoformat(),
@@ -597,7 +683,7 @@ def main() -> int:
         return 2
 
     media_total = sum(job.duration for job in jobs)
-    existing_count = sum(1 for job in jobs if job.output.is_file() and job.output.stat().st_size > 0)
+    existing_count = completed_output_count(jobs, args.target)
     print(f"対象: {len(jobs)}件 / 総時間: {format_seconds(media_total)}")
     print(f"完了済み: {existing_count}件 / 残り: {len(jobs) - existing_count}件")
     print(f"種目別: {category_summary(jobs)}")
@@ -617,6 +703,13 @@ def main() -> int:
     terminal = TerminalUI(enabled=sys.stdout.isatty() and not args.no_tui)
     LOGGER = RunLogger(log_path, terminal)
     install_signal_handlers()
+    LOGGER.write("出力構成を確認中（既存の旧形式動画は削除せず、新しい分類先へコピーします）")
+    migrated_count, migration_errors = migrate_legacy_outputs(jobs, args.target)
+    if migrated_count:
+        LOGGER.write(f"旧形式から新形式へコピー: {migrated_count}件（旧ファイルは残しています）")
+    for migration_error in migration_errors:
+        LOGGER.write(f"旧形式のコピー失敗: {migration_error}")
+    existing_count = sum(1 for job in jobs if job.output.is_file() and job.output.stat().st_size > 0)
     state = create_state(args, jobs)
     state["completed"] = existing_count
     for item, job in zip(state["jobs"], jobs):
