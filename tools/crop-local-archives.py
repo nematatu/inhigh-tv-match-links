@@ -264,30 +264,68 @@ def school_name(side: dict[str, Any]) -> str:
 
 
 def legacy_output_candidates(target: Path, entry: dict[str, Any]) -> list[Path]:
-    """旧形式（種目直下のMP4）を新形式へ移行するための候補。"""
+    """旧形式・中間形式を新形式へ移行するための候補。"""
     left, right = match_names(entry)
-    base = legacy_safe_name(f"{left}-{right}")
-    directory = target / category_dir(entry)
+    category = category_dir(entry)
+    old_bases = [
+        legacy_safe_name(f"{left}-{right}"),
+        safe_name(f"{left}-{right}"),
+    ]
     suffix = legacy_safe_name(f"{entry.get('matchNo') or '試合'}-{entry.get('orderName') or 'order'}")
-    candidates = [directory / f"{base}.mp4", directory / f"{base}__{suffix}.mp4"]
-    candidates.extend(sorted(directory.glob(f"{base}__*.mp4")))
+    candidates: list[Path] = []
+
+    # 旧形式: 種目ディレクトリ直下。
+    flat_directory = target / category
+    for base in old_bases:
+        candidates.extend([flat_directory / f"{base}.mp4", flat_directory / f"{base}__{suffix}.mp4"])
+        candidates.extend(sorted(flat_directory.glob(f"{base}__*.mp4")))
+
+    # 中間形式: 団体は学校対戦、個人は回戦/選手対戦の下にファイルを置いていた。
+    sides = entry.get("sides") or []
+    if entry.get("tournamentType") == "team":
+        left_school = school_name(sides[0]) if len(sides) > 0 else "学校名未確認"
+        right_school = school_name(sides[1]) if len(sides) > 1 else "学校名未確認"
+        group_names = [
+            legacy_safe_name(f"{left_school}vs{right_school}"),
+            safe_name(f"{left_school}vs{right_school}"),
+        ]
+        for group_name in group_names:
+            for base in old_bases:
+                candidates.extend([
+                    target / category / group_name / f"{base}.mp4",
+                    target / category / group_name / f"{base}__{suffix}.mp4",
+                ])
+    else:
+        round_value = str(entry.get("round") or "回戦未確認")
+        round_names = [legacy_safe_name(round_value), safe_name(round_value)]
+        matchup_names = [
+            legacy_safe_name(f"{left}vs{right}"),
+            safe_name(f"{left}vs{right}"),
+        ]
+        for round_name in round_names:
+            for matchup_name in matchup_names:
+                for base in old_bases:
+                    candidates.extend([
+                        target / category / round_name / matchup_name / f"{base}.mp4",
+                        target / category / round_name / matchup_name / f"{base}__{suffix}.mp4",
+                    ])
     return list(dict.fromkeys(candidates))
 
 
 def output_path(target: Path, entry: dict[str, Any], used: set[Path]) -> Path:
     left, right = match_names(entry)
-    base = safe_name(f"{left}-{right}")
     category = category_dir(entry)
     sides = entry.get("sides") or []
     if entry.get("tournamentType") == "team":
+        base = safe_name(f"{left}-{right}")
         left_school = school_name(sides[0]) if len(sides) > 0 else "学校名未確認"
         right_school = school_name(sides[1]) if len(sides) > 1 else "学校名未確認"
         group_directory = safe_name(f"{left_school}vs{right_school}")
         directory = target / category / group_directory
     else:
+        base = safe_name(f"{left}vs{right}")
         round_directory = safe_name(str(entry.get("round") or "回戦未確認"))
-        group_directory = safe_name(f"{left}vs{right}")
-        directory = target / category / round_directory / group_directory
+        directory = target / category / round_directory
     candidate = directory / f"{base}.mp4"
     if candidate not in used:
         return candidate

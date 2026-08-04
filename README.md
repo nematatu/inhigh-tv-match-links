@@ -56,10 +56,10 @@ Android Chromeの拡張機能対応やiOS Safari Web Extensionの配布は、こ
 ```text
 TEAM-M/学校名Avs学校名B/選手A-選手B.mp4
 TEAM-W/学校名Avs学校名B/選手A-選手B.mp4
-MS/1回戦/選手Avs選手B/選手A-選手B.mp4
-MD/2回戦/選手A・選手Bvs選手C・選手D/選手A・選手B-選手C・選手D.mp4
-WS/準々決勝/選手Avs選手B/選手A-選手B.mp4
-WD/決勝/選手A・選手Bvs選手C・選手D/選手A・選手B-選手C・選手D.mp4
+MS/1回戦/選手Avs選手B.mp4
+MD/2回戦/選手A・選手Bvs選手C・選手D.mp4
+WS/準々決勝/選手Avs選手B.mp4
+WD/決勝/選手A・選手Bvs選手C・選手D.mp4
 ```
 
 BIRD SCOREで確認した開始秒から次の試合開始直前までをMP4として保存します。ファイル名・ディレクトリ名には空白を入れません。既存の出力先ファイルがあれば再利用するため、中断後も続きから実行できます。以前の種目直下に作成された完成動画は削除せず、新しい構成へコピーして再利用します。
