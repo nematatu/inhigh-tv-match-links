@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import errno
 import fcntl
+import io
 import json
 import os
 import re
@@ -34,6 +35,7 @@ STOP_GRACE_SECONDS = 15.0
 ROUND_LABELS = frozenset({"1回戦", "2回戦", "3回戦", "4回戦", "準々決勝", "準決勝", "決勝"})
 
 STOP_REQUESTED = False
+STOP_SIGNAL: int | None = None
 ACTIVE_PROCESS: subprocess.Popen[str] | None = None
 LOGGER: "RunLogger | None" = None
 
@@ -73,80 +75,133 @@ class RunLogger:
 
 
 class TerminalUI:
-    """端末では進捗を同じ画面に再描画し、リダイレクト時は1行ずつ出す。"""
+    """前のダウンロードCLIと同じ固定ダッシュボード式の進捗表示。"""
 
-    def __init__(self, enabled: bool):
+    def __init__(self, enabled: bool, output: Any | None = None):
         self.enabled = enabled
+        self.output = output or sys.stdout
         self.rendered_lines = 0
         self.cursor_hidden = False
-
-    def _home(self) -> None:
-        if self.rendered_lines > 1:
-            sys.stdout.write(f"\033[{self.rendered_lines - 1}A")
-
-    def _clear(self) -> None:
-        if not self.enabled or not self.rendered_lines:
-            return
-        self._home()
-        for index in range(self.rendered_lines):
-            sys.stdout.write("\033[2K\r")
-            if index < self.rendered_lines - 1:
-                sys.stdout.write("\n")
-        self._home()
-        sys.stdout.flush()
-        self.rendered_lines = 0
+        self.last_rendered_at = 0.0
 
     @staticmethod
-    def _clip(value: str, width: int) -> str:
-        value = str(value)
-        if len(value) <= width:
-            return value
-        return value[: max(0, width - 3)] + "..."
+    def _bar(percent: float, width: int = 20) -> str:
+        percent = min(100.0, max(0.0, percent))
+        filled = min(width, int(percent / 100.0 * width))
+        return "█" * filled + "░" * (width - filled)
+
+    @staticmethod
+    def _display_width(text: str) -> int:
+        width = 0
+        for character in str(text):
+            if unicodedata.combining(character):
+                continue
+            width += 2 if unicodedata.east_asian_width(character) in ("W", "F") else 1
+        return width
+
+    @classmethod
+    def _fit_line(cls, text: str, width: int) -> str:
+        if width <= 0:
+            return ""
+        text = str(text)
+        if cls._display_width(text) <= width:
+            return text
+        if width == 1:
+            return "…"
+        result: list[str] = []
+        used = 0
+        for character in text:
+            character_width = (
+                0
+                if unicodedata.combining(character)
+                else 2 if unicodedata.east_asian_width(character) in ("W", "F") else 1
+            )
+            if used + character_width > width - 1:
+                break
+            result.append(character)
+            used += character_width
+        return "".join(result) + "…"
+
+    def _terminal_size(self) -> os.terminal_size:
+        try:
+            return os.get_terminal_size(self.output.fileno())
+        except (AttributeError, OSError, ValueError, io.UnsupportedOperation):
+            return shutil.get_terminal_size(fallback=(120, 24))
+
+    def _clear_live(self) -> None:
+        if not self.enabled or self.rendered_lines <= 0:
+            return
+        for _ in range(self.rendered_lines):
+            self.output.write("\033[1A\r\033[2K")
+        self.rendered_lines = 0
+
+    def _dashboard_lines(self, details: dict[str, Any]) -> list[str]:
+        overall_percent = details["time_percent"]
+        current_percent = details["current_percent"]
+        current = details["current"]
+        category_prefix = f"{details.get('category')}/" if details.get("category") and details["category"] != "-" else ""
+        if category_prefix and not str(current).startswith(category_prefix):
+            current = f"{details['category']}/{current}"
+        lines = [
+            "インハイTV 試合別動画切り出し",
+            "進捗（この領域を更新します。Ctrl+Cで中断）",
+            (
+                f"[全体] [{self._bar(overall_percent)}] {overall_percent:5.1f}%"
+                f" | 完了 {details['completed']}/{details['total']}件"
+                f" ({details['count_percent']:4.1f}%)"
+                f" | 残り {details['overall_remaining_text']}"
+                f" | 終了予定 {details['overall_eta']}"
+            ),
+            (
+                f"[現在] [{self._bar(current_percent, width=16)}] {current_percent:5.1f}%"
+                f" | {current}"
+            ),
+            (
+                f"        処理 {details['current_done_text']}"
+                f" | 速度 {details['current_speed_text']}"
+                f" | 残り {details['current_remaining_text']}"
+                f" | 終了予定 {details['current_eta']}"
+            ),
+            f"経過 {details['elapsed_text']} | Ctrl+Cで中断・次回再開",
+        ]
+        width = max(1, self._terminal_size().columns - 1)
+        return [self._fit_line(line, width) for line in lines]
 
     def event(self, message: str) -> None:
         if self.enabled:
-            self._clear()
+            self._clear_live()
             if self.cursor_hidden:
-                sys.stdout.write("\033[?25h")
+                self.output.write("\033[?25h")
                 self.cursor_hidden = False
-        print(message, flush=True)
+        print(message, file=self.output, flush=True)
 
     def progress(self, message: str, details: dict[str, Any]) -> None:
         if not self.enabled:
             timestamp = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S%z")
-            print(f"[{timestamp}] {message}", flush=True)
+            print(f"[{timestamp}] {message}", file=self.output, flush=True)
             return
 
-        columns = max(40, shutil.get_terminal_size((100, 24)).columns - 1)
+        now = time.monotonic()
+        if self.last_rendered_at and now - self.last_rendered_at < 0.2:
+            return
         if not self.cursor_hidden:
-            sys.stdout.write("\033[?25l")
+            self.output.write("\033[?25l")
             self.cursor_hidden = True
-        current = self._clip(details["current"], columns - 20)
-        lines = [
-            "インハイTV 試合別動画切り出し",
-            f"全体進捗: {details['completed']}/{details['total']}件 ({details['count_percent']:4.1f}%)"
-            f" | 映像 {details['time_percent']:4.1f}% | 速度 {details['speed']:6.2f}倍速",
-            f"処理中動画: {details['category']}/{current} | 動画進捗 {details['current_percent']:4.1f}%"
-            f" | 動画残り {details['current_remaining_text']}",
-            f"全体処理の終了予測: {details['overall_eta']} | 全体残り {details['overall_remaining_text']}",
-            f"経過: {details['elapsed_text']} | Ctrl+Cで中断・次回再開",
-        ]
-        if self.rendered_lines:
-            self._home()
-        for index, line in enumerate(lines):
-            sys.stdout.write("\033[2K\r" + self._clip(line, columns))
-            if index < len(lines) - 1:
-                sys.stdout.write("\n")
-        sys.stdout.flush()
+        self._clear_live()
+        lines = self._dashboard_lines(details)
+        for line in lines:
+            self.output.write(f"\r\033[2K{line}\n")
+        self.output.flush()
         self.rendered_lines = len(lines)
+        self.last_rendered_at = now
 
     def finish(self) -> None:
-        if self.enabled and self.rendered_lines:
-            self._clear()
-        if self.enabled and self.cursor_hidden:
-            sys.stdout.write("\033[?25h")
-            sys.stdout.flush()
-            self.cursor_hidden = False
+        if self.enabled:
+            self._clear_live()
+            if self.cursor_hidden:
+                self.output.write("\033[?25h")
+                self.output.flush()
+                self.cursor_hidden = False
 
 
 class OutputLock:
@@ -494,12 +549,11 @@ def atomic_write_json(path: Path, value: dict[str, Any]) -> None:
 
 def install_signal_handlers() -> None:
     def request_stop(signum: int, _frame: Any) -> None:
-        global STOP_REQUESTED, ACTIVE_PROCESS
+        global STOP_REQUESTED, STOP_SIGNAL, ACTIVE_PROCESS
         if STOP_REQUESTED:
             return
         STOP_REQUESTED = True
-        if LOGGER:
-            LOGGER.write(f"停止要求を受信しました（signal={signum}）。現在の試合を安全に終了します。")
+        STOP_SIGNAL = signum
         if ACTIVE_PROCESS is not None and ACTIVE_PROCESS.poll() is None:
             ACTIVE_PROCESS.terminate()
 
@@ -517,6 +571,8 @@ def format_seconds(seconds: float) -> str:
 
 
 def format_eta(remaining: float, speed: float) -> str:
+    if remaining <= 0:
+        return "完了"
     if speed <= 0:
         return "計算中"
     return (datetime.now().astimezone() + timedelta(seconds=max(0.0, remaining / speed))).strftime("%Y-%m-%d %H:%M頃")
@@ -540,12 +596,16 @@ def progress_details(
     overall_remaining = max(0.0, media_total - media_done)
     if current_duration is None or current_done is None:
         current_percent = 0.0
+        current_done_text = "-"
+        current_speed_text = "-"
         current_remaining_text = "-"
         current_eta = "-"
     else:
         current_remaining = max(0.0, current_duration - current_done)
         current_percent = current_done / current_duration * 100 if current_duration > 0 else 100.0
         current_speed = current_done / current_elapsed if current_elapsed and current_elapsed > 0 else 0.0
+        current_done_text = f"{format_seconds(current_done)} / {format_seconds(current_duration)}"
+        current_speed_text = f"{current_speed:.2f}倍速" if current_speed > 0 else "計算中"
         current_remaining_text = format_seconds(current_remaining / current_speed) if current_speed > 0 else "計算中"
         current_eta = format_eta(current_remaining, current_speed)
     return {
@@ -557,6 +617,8 @@ def progress_details(
         "category": category,
         "speed": speed,
         "current_percent": current_percent,
+        "current_done_text": current_done_text,
+        "current_speed_text": current_speed_text,
         "current_remaining_text": current_remaining_text,
         "current_eta": current_eta,
         "overall_remaining_text": format_seconds(overall_remaining / speed) if speed > 0 else "計算中",
@@ -590,8 +652,8 @@ def progress_line(
         current_elapsed=current_elapsed,
     )
     return (
-        f"進捗 {details['completed']}/{details['total']}件 ({details['count_percent']:5.1f}%) "
-        f"/ 時間 {details['time_percent']:5.1f}% | 処理中 {details['current']} | "
+        f"全体 {details['time_percent']:5.1f}% | 完了 {details['completed']}/{details['total']}件 "
+        f"({details['count_percent']:5.1f}%) | 処理中 {details['current']} | "
         f"速度 {details['speed']:4.2f}倍速 | "
         f"動画残り {details['current_remaining_text']} | "
         f"全体処理終了予測 {details['overall_eta']} / 全体残り {details['overall_remaining_text']} | "
@@ -758,7 +820,7 @@ def main() -> int:
 
     media_total = sum(job.duration for job in jobs)
     existing_count = completed_output_count(jobs, args.target)
-    print(f"対象: {len(jobs)}件 / 総時間: {format_seconds(media_total)}")
+    print(f"対象: {len(jobs)}件")
     print(f"完了済み: {existing_count}件 / 残り: {len(jobs) - existing_count}件")
     print(f"種目別: {category_summary(jobs)}")
     if args.dry_run:
@@ -815,6 +877,19 @@ def main() -> int:
             current_done = 0.0
             current_started = time.monotonic()
 
+            initial_current = relative_output(args.target, job.output)
+            initial_message = progress_line(
+                state["completed"], len(jobs), media_done, media_total,
+                initial_current, 0.0, time.monotonic() - started,
+                current_duration=job.duration, current_done=0.0, current_elapsed=0.001,
+            )
+            initial_details = progress_details(
+                state["completed"], len(jobs), media_done, media_total,
+                initial_current, 0.0, time.monotonic() - started, category_dir(job.entry),
+                current_duration=job.duration, current_done=0.0, current_elapsed=0.001,
+            )
+            LOGGER.progress(initial_message, initial_details)
+
             def report(current: float) -> None:
                 nonlocal current_done, last_report, last_progress
                 current_done = max(current_done, current)
@@ -824,13 +899,14 @@ def main() -> int:
                 last_report = now
                 elapsed = max(0.001, now - started)
                 speed = (media_done + current_done) / elapsed
+                current_output = relative_output(args.target, job.output)
                 message = progress_line(state["completed"], len(jobs), media_done + current_done, media_total,
-                                        job.output.name, speed, elapsed,
+                                        current_output, speed, elapsed,
                                         current_duration=job.duration,
                                         current_done=current_done,
                                         current_elapsed=max(0.001, now - current_started))
                 details = progress_details(state["completed"], len(jobs), media_done + current_done, media_total,
-                                           job.output.name, speed, elapsed, category_dir(job.entry),
+                                           current_output, speed, elapsed, category_dir(job.entry),
                                            current_duration=job.duration,
                                            current_done=current_done,
                                            current_elapsed=max(0.001, now - current_started))
@@ -869,6 +945,8 @@ def main() -> int:
         STOP_REQUESTED = True
     finally:
         if STOP_REQUESTED:
+            if STOP_SIGNAL is not None:
+                LOGGER.write(f"停止要求を受信しました（signal={STOP_SIGNAL}）。現在の試合を安全に終了しました。")
             state["status"] = "cancelled"
             if state.get("current"):
                 state["cancelled"] = max(1, state["cancelled"])
@@ -889,4 +967,8 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except KeyboardInterrupt:
+        print("\n中断しました。状態ファイルを確認して、次回同じコマンドで再開してください。", file=sys.stderr)
+        raise SystemExit(130)
