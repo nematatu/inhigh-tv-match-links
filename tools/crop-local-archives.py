@@ -201,6 +201,14 @@ def side_name(side: dict[str, Any]) -> str:
 def safe_name(value: str) -> str:
     value = unicodedata.normalize("NFC", value)
     value = re.sub(r"[\\/:*?\"<>|\x00-\x1f]", "-", value)
+    value = re.sub(r"\s+", "", value).strip(".")
+    return value or "対戦カード未確認"
+
+
+def legacy_safe_name(value: str) -> str:
+    """空白を残していた旧CLIの名前を探すための互換サニタイズ。"""
+    value = unicodedata.normalize("NFC", value)
+    value = re.sub(r"[\\/:*?\"<>|\x00-\x1f]", "-", value)
     value = re.sub(r"\s+", " ", value).strip(" .")
     return value or "対戦カード未確認"
 
@@ -258,9 +266,9 @@ def school_name(side: dict[str, Any]) -> str:
 def legacy_output_candidates(target: Path, entry: dict[str, Any]) -> list[Path]:
     """旧形式（種目直下のMP4）を新形式へ移行するための候補。"""
     left, right = match_names(entry)
-    base = safe_name(f"{left}-{right}")
+    base = legacy_safe_name(f"{left}-{right}")
     directory = target / category_dir(entry)
-    suffix = safe_name(f"{entry.get('matchNo') or '試合'}-{entry.get('orderName') or 'order'}")
+    suffix = legacy_safe_name(f"{entry.get('matchNo') or '試合'}-{entry.get('orderName') or 'order'}")
     candidates = [directory / f"{base}.mp4", directory / f"{base}__{suffix}.mp4"]
     candidates.extend(sorted(directory.glob(f"{base}__*.mp4")))
     return list(dict.fromkeys(candidates))
@@ -621,7 +629,8 @@ def category_summary(jobs: list[Job]) -> str:
 
 def create_state(args: argparse.Namespace, jobs: list[Job]) -> dict[str, Any]:
     return {
-        "schemaVersion": 3,
+        "schemaVersion": 4,
+        "filenamePolicy": "whitespace-free",
         "status": "running",
         "startedAt": datetime.now().astimezone().isoformat(),
         "updatedAt": datetime.now().astimezone().isoformat(),
