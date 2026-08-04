@@ -125,7 +125,11 @@ class TerminalUI:
             ),
             self._row(f"現在 {details['category']} / {current}", inner),
             self._row(
-                f"残り {details['remaining_text']}  |  予測終了 {details['eta']}  |  経過 {details['elapsed_text']}",
+                f"動画残り {details['current_remaining_text']}  |  動画終了 {details['current_eta']}",
+                inner,
+            ),
+            self._row(
+                f"全体残り {details['overall_remaining_text']}  |  全体終了 {details['overall_eta']}  |  経過 {details['elapsed_text']}",
                 inner,
             ),
             "└" + "─" * inner + "┘",
@@ -380,10 +384,21 @@ def progress_details(
     speed: float,
     elapsed: float,
     category: str = "-",
+    current_duration: float | None = None,
+    current_done: float | None = None,
+    current_elapsed: float | None = None,
 ) -> dict[str, Any]:
     count_percent = completed / total * 100 if total else 100.0
     time_percent = media_done / media_total * 100 if media_total else count_percent
-    remaining = max(0.0, media_total - media_done)
+    overall_remaining = max(0.0, media_total - media_done)
+    if current_duration is None or current_done is None:
+        current_remaining_text = "-"
+        current_eta = "-"
+    else:
+        current_remaining = max(0.0, current_duration - current_done)
+        current_speed = current_done / current_elapsed if current_elapsed and current_elapsed > 0 else 0.0
+        current_remaining_text = format_seconds(current_remaining / current_speed) if current_speed > 0 else "計算中"
+        current_eta = format_eta(current_remaining, current_speed)
     return {
         "completed": completed,
         "total": total,
@@ -392,19 +407,45 @@ def progress_details(
         "current": current,
         "category": category,
         "speed": speed,
-        "remaining_text": format_seconds(remaining / speed) if speed > 0 else "計算中",
-        "eta": format_eta(remaining, speed),
+        "current_remaining_text": current_remaining_text,
+        "current_eta": current_eta,
+        "overall_remaining_text": format_seconds(overall_remaining / speed) if speed > 0 else "計算中",
+        "overall_eta": format_eta(overall_remaining, speed),
         "elapsed_text": format_seconds(elapsed),
     }
 
 
-def progress_line(completed: int, total: int, media_done: float, media_total: float, current: str, speed: float, elapsed: float) -> str:
-    details = progress_details(completed, total, media_done, media_total, current, speed, elapsed)
+def progress_line(
+    completed: int,
+    total: int,
+    media_done: float,
+    media_total: float,
+    current: str,
+    speed: float,
+    elapsed: float,
+    current_duration: float | None = None,
+    current_done: float | None = None,
+    current_elapsed: float | None = None,
+) -> str:
+    details = progress_details(
+        completed,
+        total,
+        media_done,
+        media_total,
+        current,
+        speed,
+        elapsed,
+        current_duration=current_duration,
+        current_done=current_done,
+        current_elapsed=current_elapsed,
+    )
     return (
         f"進捗 {details['completed']}/{details['total']}件 ({details['count_percent']:5.1f}%) "
         f"/ 時間 {details['time_percent']:5.1f}% | 処理中 {details['current']} | "
-        f"速度 {details['speed']:4.2f}倍速 | 残り {details['remaining_text']} "
-        f"| 予測終了 {details['eta']} | 経過 {details['elapsed_text']}"
+        f"速度 {details['speed']:4.2f}倍速 | "
+        f"動画残り {details['current_remaining_text']} / 動画終了 {details['current_eta']} | "
+        f"全体残り {details['overall_remaining_text']} / 全体終了 {details['overall_eta']} | "
+        f"経過 {details['elapsed_text']}"
     )
 
 
@@ -605,6 +646,7 @@ def main() -> int:
             if temporary.exists():
                 LOGGER.write(f"前回の未完了ファイルを上書きします: {temporary.name}")
             current_done = 0.0
+            current_started = time.monotonic()
 
             def report(current: float) -> None:
                 nonlocal current_done, last_report, last_progress
@@ -616,9 +658,15 @@ def main() -> int:
                 elapsed = max(0.001, now - started)
                 speed = (media_done + current_done) / elapsed
                 message = progress_line(state["completed"], len(jobs), media_done + current_done, media_total,
-                                        job.output.name, speed, elapsed)
+                                        job.output.name, speed, elapsed,
+                                        current_duration=job.duration,
+                                        current_done=current_done,
+                                        current_elapsed=max(0.001, now - current_started))
                 details = progress_details(state["completed"], len(jobs), media_done + current_done, media_total,
-                                           job.output.name, speed, elapsed, category_dir(job.entry))
+                                           job.output.name, speed, elapsed, category_dir(job.entry),
+                                           current_duration=job.duration,
+                                           current_done=current_done,
+                                           current_elapsed=max(0.001, now - current_started))
                 LOGGER.progress(message, details)
                 last_progress = current_done
 
