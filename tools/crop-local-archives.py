@@ -80,7 +80,9 @@ def output_path(target: Path, entry: dict, used: set[Path]) -> Path:
     base = safe_name(f"{left}-{right}")
     directory = target / category_dir(entry)
     candidate = directory / f"{base}.mp4"
-    if candidate not in used and not candidate.exists():
+    # Reuse the deterministic card name when it already exists so a resumed
+    # run does not create a second copy with a suffix.
+    if candidate not in used:
         return candidate
     suffix = safe_name(f"{entry.get('matchNo') or '試合'}-{entry.get('orderName') or 'order'}")
     candidate = directory / f"{base}__{suffix}.mp4"
