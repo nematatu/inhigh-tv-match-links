@@ -151,7 +151,12 @@ def main() -> int:
 
     jobs: list[tuple[dict, Path, Path, float, float]] = []
     used: set[Path] = set()
-    for source, group in sorted(grouped.items(), key=lambda pair: str(pair[0])):
+    source_groups = sorted(grouped.items(), key=lambda pair: str(pair[0]))
+    assigned_sources = 0
+    for source_index, (source, group) in enumerate(source_groups):
+        if source_index % args.workers != args.worker:
+            continue
+        assigned_sources += 1
         if not source.is_file():
             print(f"スキップ（元動画なし）: {source}", file=sys.stderr)
             continue
@@ -176,10 +181,7 @@ def main() -> int:
             used.add(output)
             jobs.append((entry, source, output, start, end - start))
 
-    total_jobs = len(jobs)
-    if args.workers > 1:
-        jobs = [job for index, job in enumerate(jobs) if index % args.workers == args.worker]
-    print(f"生成対象: {len(jobs)}件（全体 {total_jobs}件 / 分割 {args.worker + 1}/{args.workers}）")
+    print(f"生成対象: {len(jobs)}件（元動画 {assigned_sources}本 / 分割 {args.worker + 1}/{args.workers}）")
     if args.dry_run:
         for entry, source, output, start, duration in jobs:
             print(f"{entry.get('category')} {entry.get('matchNo')} {entry.get('orderName')} {start:.0f}s {duration:.0f}s -> {output}")
