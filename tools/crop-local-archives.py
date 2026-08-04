@@ -18,6 +18,7 @@ import re
 import selectors
 import signal
 import shutil
+import statistics
 import subprocess
 import sys
 import time
@@ -33,6 +34,10 @@ DEFAULT_TARGET = Path("/Volumes/名称未設定/inhigh-tv-2026-badminton-cropped
 DEFAULT_DATA = Path(__file__).resolve().parents[1] / "data" / "matches.json"
 STOP_GRACE_SECONDS = 15.0
 ROUND_LABELS = frozenset({"1回戦", "2回戦", "3回戦", "4回戦", "準々決勝", "準決勝", "決勝"})
+ETA_MIN_SAMPLES = 6
+ETA_SAMPLE_WINDOW = 12
+ETA_MIN_SAMPLE_INTERVAL = 3.0
+CURRENT_ETA_WARMUP_SECONDS = 10.0
 
 STOP_REQUESTED = False
 STOP_SIGNAL: int | None = None
@@ -47,6 +52,39 @@ class Job:
     output: Path
     start: float
     duration: float
+
+
+class SpeedEstimator:
+    """今回の実行中に得た速度だけで、外れ値を抑えた全体速度を求める。"""
+
+    def __init__(self) -> None:
+        self.samples: list[float] = []
+        self.last_media = 0.0
+        self.last_at: float | None = None
+
+    def observe(self, media_done: float, now: float) -> None:
+        if self.last_at is None:
+            self.last_at = now
+            self.last_media = media_done
+            return
+        elapsed = now - self.last_at
+        if elapsed < ETA_MIN_SAMPLE_INTERVAL:
+            return
+        delta_media = max(0.0, media_done - self.last_media)
+        self.samples.append(delta_media / elapsed)
+        self.samples = self.samples[-ETA_SAMPLE_WINDOW:]
+        self.last_at = now
+        self.last_media = media_done
+
+    @property
+    def sample_count(self) -> int:
+        return len(self.samples)
+
+    @property
+    def speed(self) -> float:
+        if len(self.samples) < ETA_MIN_SAMPLES:
+            return 0.0
+        return max(0.0, statistics.median(self.samples))
 
 
 class RunLogger:
@@ -617,10 +655,17 @@ def progress_details(
     current_duration: float | None = None,
     current_done: float | None = None,
     current_elapsed: float | None = None,
+    eta_samples: int | None = None,
 ) -> dict[str, Any]:
     count_percent = completed / total * 100 if total else 100.0
     time_percent = media_done / media_total * 100 if media_total else count_percent
     overall_remaining = max(0.0, media_total - media_done)
+    overall_ready = overall_remaining <= 0 or eta_samples is None or eta_samples >= ETA_MIN_SAMPLES
+    overall_speed = speed if overall_ready else 0.0
+    if overall_ready:
+        eta_status = "実測中央値"
+    else:
+        eta_status = f"実測中 {eta_samples}/{ETA_MIN_SAMPLES}"
     if current_duration is None or current_done is None:
         current_percent = 0.0
         current_done_text = "-"
@@ -630,7 +675,11 @@ def progress_details(
     else:
         current_remaining = max(0.0, current_duration - current_done)
         current_percent = current_done / current_duration * 100 if current_duration > 0 else 100.0
-        current_speed = current_done / current_elapsed if current_elapsed and current_elapsed > 0 else 0.0
+        current_speed = (
+            current_done / current_elapsed
+            if current_elapsed and current_elapsed >= CURRENT_ETA_WARMUP_SECONDS and current_done > 0
+            else 0.0
+        )
         current_done_text = f"{format_seconds(current_done)} / {format_seconds(current_duration)}"
         current_speed_text = f"{current_speed:.2f}倍速" if current_speed > 0 else "計算中"
         current_remaining_text = format_seconds(current_remaining / current_speed) if current_speed > 0 else "計算中"
@@ -643,13 +692,15 @@ def progress_details(
         "current": current,
         "category": category,
         "speed": speed,
+        "speed_text": f"{overall_speed:.2f}倍速" if overall_ready and overall_speed > 0 else eta_status,
+        "eta_status": eta_status,
         "current_percent": current_percent,
         "current_done_text": current_done_text,
         "current_speed_text": current_speed_text,
         "current_remaining_text": current_remaining_text,
         "current_eta": current_eta,
-        "overall_remaining_text": format_seconds(overall_remaining / speed) if speed > 0 else "計算中",
-        "overall_eta": format_eta(overall_remaining, speed),
+        "overall_remaining_text": format_seconds(overall_remaining / overall_speed) if overall_ready and overall_speed > 0 else eta_status,
+        "overall_eta": format_eta(overall_remaining, overall_speed) if overall_ready else eta_status,
         "elapsed_text": format_seconds(elapsed),
     }
 
@@ -665,6 +716,7 @@ def progress_line(
     current_duration: float | None = None,
     current_done: float | None = None,
     current_elapsed: float | None = None,
+    eta_samples: int | None = None,
 ) -> str:
     details = progress_details(
         completed,
@@ -677,11 +729,12 @@ def progress_line(
         current_duration=current_duration,
         current_done=current_done,
         current_elapsed=current_elapsed,
+        eta_samples=eta_samples,
     )
     return (
         f"全体 {details['time_percent']:5.1f}% | 完了 {details['completed']}/{details['total']}件 "
         f"({details['count_percent']:5.1f}%) | 処理中 {details['current']} | "
-        f"速度 {details['speed']:4.2f}倍速 | "
+        f"速度 {details['speed_text']} | "
         f"動画残り {details['current_remaining_text']} | "
         f"全体処理終了予測 {details['overall_eta']} / 全体残り {details['overall_remaining_text']} | "
         f"経過 {details['elapsed_text']}"
@@ -887,6 +940,8 @@ def main() -> int:
 
     started = time.monotonic()
     media_done = sum(job.duration for job in jobs if job.output.is_file() and job.output.stat().st_size > 0)
+    run_media_done = 0.0
+    speed_estimator = SpeedEstimator()
     last_progress = 0.0
     last_report = 0.0
     LOGGER.write(f"開始: 対象 {len(jobs)}件、完了済み {existing_count}件、残り {len(jobs) - existing_count}件")
@@ -914,11 +969,13 @@ def main() -> int:
                 state["completed"], len(jobs), media_done, media_total,
                 initial_current, 0.0, time.monotonic() - started,
                 current_duration=job.duration, current_done=0.0, current_elapsed=0.001,
+                eta_samples=speed_estimator.sample_count,
             )
             initial_details = progress_details(
                 state["completed"], len(jobs), media_done, media_total,
                 initial_current, 0.0, time.monotonic() - started, category_dir(job.entry),
                 current_duration=job.duration, current_done=0.0, current_elapsed=0.001,
+                eta_samples=speed_estimator.sample_count,
             )
             LOGGER.progress(initial_message, initial_details)
 
@@ -930,18 +987,21 @@ def main() -> int:
                     return
                 last_report = now
                 elapsed = max(0.001, now - started)
-                speed = (media_done + current_done) / elapsed
+                speed_estimator.observe(run_media_done + current_done, now)
+                speed = speed_estimator.speed
                 current_output = relative_output(args.target, job.output)
                 message = progress_line(state["completed"], len(jobs), media_done + current_done, media_total,
                                         current_output, speed, elapsed,
                                         current_duration=job.duration,
                                         current_done=current_done,
-                                        current_elapsed=max(0.001, now - current_started))
+                                        current_elapsed=max(0.001, now - current_started),
+                                        eta_samples=speed_estimator.sample_count)
                 details = progress_details(state["completed"], len(jobs), media_done + current_done, media_total,
                                            current_output, speed, elapsed, category_dir(job.entry),
                                            current_duration=job.duration,
                                            current_done=current_done,
-                                           current_elapsed=max(0.001, now - current_started))
+                                           current_elapsed=max(0.001, now - current_started),
+                                           eta_samples=speed_estimator.sample_count)
                 LOGGER.progress(message, details)
                 last_progress = current_done
 
@@ -954,14 +1014,18 @@ def main() -> int:
                 item["status"] = "completed"
                 state["completed"] += 1
                 media_done += job.duration
+                run_media_done += job.duration
+                speed_estimator.observe(run_media_done, time.monotonic())
                 state["current"] = None
                 update_state(state, state_path)
                 elapsed = time.monotonic() - started
-                speed = media_done / max(0.001, elapsed)
+                speed = speed_estimator.speed
                 message = progress_line(state["completed"], len(jobs), media_done, media_total,
-                                        "次の試合を準備中", speed, elapsed)
+                                        "次の試合を準備中", speed,
+                                        elapsed, eta_samples=speed_estimator.sample_count)
                 details = progress_details(state["completed"], len(jobs), media_done, media_total,
-                                           "次の試合を準備中", speed, elapsed, "-")
+                                           "次の試合を準備中", speed, elapsed, "-",
+                                           eta_samples=speed_estimator.sample_count)
                 LOGGER.progress(message, details)
             elif error_message == "中断" or STOP_REQUESTED:
                 item["status"] = "cancelled"
