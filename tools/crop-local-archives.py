@@ -608,20 +608,6 @@ def migrate_legacy_outputs(jobs: list[Job], target: Path, ffprobe: str | None) -
     return migrated, errors
 
 
-def preserve_mismatched_output(path: Path, job: Job, ffprobe: str) -> Path | None:
-    """切り出し時間が違う既存の派生動画を消さずに退避する。"""
-    if not path.is_file() or path.stat().st_size <= 0 or output_matches_job(path, job, ffprobe):
-        return None
-    index = 1
-    while True:
-        suffix = ".old-duration" if index == 1 else f".old-duration-{index}"
-        backup = path.with_name(f"{path.stem}{suffix}{path.suffix}")
-        if not backup.exists():
-            path.replace(backup)
-            return backup
-        index += 1
-
-
 def ffmpeg_command(ffmpeg: str, job: Job, temporary: Path, reencode: bool) -> list[str]:
     command = [
         ffmpeg,
@@ -1001,19 +987,7 @@ def main() -> int:
             update_state(state, state_path)
             job.output.parent.mkdir(parents=True, exist_ok=True)
             if job.output.is_file() and not output_matches_job(job.output, job, ffprobe):
-                try:
-                    backup = preserve_mismatched_output(job.output, job, ffprobe)
-                except OSError as error:
-                    item["status"] = "failed"
-                    state["failed"] += 1
-                    update_state(state, state_path)
-                    LOGGER.write(f"既存の長さ不一致ファイルを退避できないため処理を中止: {job.output.name} ({error})")
-                    continue
-                if backup is not None:
-                    LOGGER.write(
-                        f"終了時刻修正のため既存動画を退避しました: "
-                        f"{relative_output(args.target, job.output)} -> {relative_output(args.target, backup)}"
-                    )
+                LOGGER.write(f"終了時刻修正のため既存動画を再生成します: {relative_output(args.target, job.output)}")
             temporary = job.output.with_name(f"{job.output.stem}.part{job.output.suffix}")
             if temporary.exists():
                 LOGGER.write(f"前回の未完了ファイルを上書きします: {temporary.name}")
