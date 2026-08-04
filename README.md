@@ -7,7 +7,7 @@
 ## 構成
 
 - `extension/`: BIRD SCOREへ「動画を見る」を追加し、インハイTVで指定秒へ移動するManifest V3拡張
-- `site/`: 試合検索・リンク一覧の静的ページ
+- `site/`: 日付・種目・コートごとに試合をまとめて表示する静的リンク集
 - `tools/build-data.mjs`: BIRD SCORE公開JSONとインハイTV公開API/HLSから対応データを再生成
 - `data/`: 生成した対応データの正本
 

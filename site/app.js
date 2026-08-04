@@ -44,6 +44,17 @@ function dateLabel(value) {
   return `${month}/${day}`;
 }
 
+function startTimeLabel(value) {
+  if (!value) return "開始時刻未確認";
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return "開始時刻未確認";
+  return new Intl.DateTimeFormat("ja-JP", {
+    timeZone: "Asia/Tokyo",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(date);
+}
+
 function statusLabel(entry) {
   if (entry.status === "not_played") return "未実施";
   if (entry.status === "unavailable") return "動画未確認";
@@ -89,6 +100,20 @@ function appendText(parent, tagName, className, text) {
   return element;
 }
 
+function groupKey(entry) {
+  return [entry.date, entry.tournamentType, entry.category, entry.court || "unknown"].join("|");
+}
+
+function groupMatches(matches) {
+  const groups = new Map();
+  for (const entry of matches) {
+    const key = groupKey(entry);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(entry);
+  }
+  return [...groups.values()];
+}
+
 function renderSides(parent, entry) {
   const sides = entry.sides || [];
   if (!sides.length) {
@@ -119,7 +144,7 @@ function renderCard(entry) {
   meta.className = "match-card__meta";
   appendText(meta, "span", "match-card__eyebrow", `${typeLabel(entry)} · ${entry.category || "種目未確認"}`);
   appendText(meta, "strong", "match-card__number", `${entry.matchNo || "試合番号未確認"}${entry.orderName ? ` · ${entry.orderName}` : ""}`);
-  appendText(meta, "span", "match-card__detail", `${dateLabel(entry.date)} · ${entry.court ? `${entry.court}コート` : "コート未確認"} · ${entry.round || "ラウンド未確認"}`);
+  appendText(meta, "span", "match-card__detail", `${startTimeLabel(entry.startTime)} · ${entry.round || "ラウンド未確認"}`);
 
   const sides = document.createElement("div");
   sides.className = "match-card__sides";
@@ -159,6 +184,48 @@ function renderCard(entry) {
   return card;
 }
 
+function renderGroup(entries) {
+  const first = entries[0];
+  const group = document.createElement("section");
+  group.className = "match-group";
+
+  const heading = document.createElement("div");
+  heading.className = "match-group__header";
+  const headingText = document.createElement("div");
+  headingText.className = "match-group__heading-text";
+  appendText(
+    headingText,
+    "h3",
+    "match-group__title",
+    `${dateLabel(first.date)} · ${typeLabel(first)} · ${first.eventTitle || first.category || "種目未確認"} · ${first.court ? `${first.court}コート` : "コート未確認"}`,
+  );
+  const availableCount = entries.filter((entry) => entry.status === "available").length;
+  appendText(
+    headingText,
+    "p",
+    "match-group__meta",
+    `${entries.length.toLocaleString("ja-JP")}試合 · 動画リンク ${availableCount.toLocaleString("ja-JP")}件 · ${first.archiveTitle || "公式アーカイブ未確認"}`,
+  );
+  heading.append(headingText);
+
+  const archive = entries.find((entry) => entry.archiveUrl)?.archiveUrl;
+  if (archive) {
+    const archiveLink = document.createElement("a");
+    archiveLink.className = "match-group__archive";
+    archiveLink.href = archive.split("?")[0];
+    archiveLink.target = "_blank";
+    archiveLink.rel = "noreferrer";
+    archiveLink.textContent = "コートのアーカイブ";
+    heading.append(archiveLink);
+  }
+
+  const list = document.createElement("div");
+  list.className = "match-group__list";
+  for (const entry of entries) list.append(renderCard(entry));
+  group.append(heading, list);
+  return group;
+}
+
 function render() {
   const matches = filteredMatches();
   elements.list.replaceChildren();
@@ -166,8 +233,11 @@ function render() {
     appendText(elements.list, "p", "empty-state", "条件に一致する試合がありません。");
   } else {
     const fragment = document.createDocumentFragment();
-    matches.forEach((entry) => fragment.append(renderCard(entry)));
+    const groups = groupMatches(matches);
+    groups.forEach((group) => fragment.append(renderGroup(group)));
     elements.list.append(fragment);
+    elements.summary.textContent = `${matches.length.toLocaleString("ja-JP")}件表示 / ${groups.length.toLocaleString("ja-JP")}グループ / 全${state.matches.length.toLocaleString("ja-JP")}件`;
+    return;
   }
   elements.summary.textContent = `${matches.length.toLocaleString("ja-JP")}件表示 / 全${state.matches.length.toLocaleString("ja-JP")}件`;
 }
