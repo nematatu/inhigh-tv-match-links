@@ -503,13 +503,16 @@ def build_jobs(data: dict[str, Any], source_root: Path, target: Path, ffprobe: s
             print(f"警告: 元動画が見つからないため対象外: {source}", file=sys.stderr)
             continue
         archive_key = (source.parent.name, source.stem.rsplit("_", 1)[-1].lstrip("0") or "0")
-        archive_duration = archive_durations.get(archive_key)
-        if archive_duration is None:
-            if ffprobe is None:
-                raise RuntimeError(f"durationSecondsがなくffprobeが必要です: {source}")
+        if ffprobe is not None:
+            # 実際に接続されたHDDの動画長を上限にする。公開APIの長さと
+            # ローカル保存版の長さが数十秒ずれる場合があるため、API長だけ
+            # で終了後バッファを計算すると、存在しない範囲を期待してしまう。
             archive_duration = duration_seconds(source, ffprobe)
         else:
-            # ローカル保存版の末尾を切り落とさないための余裕。ffmpegはEOFで停止します。
+            archive_duration = archive_durations.get(archive_key)
+            if archive_duration is None:
+                raise RuntimeError(f"durationSecondsがなくffprobeが必要です: {source}")
+            # dry-runでは実ファイル長を読まないため、API長に余裕を持たせる。
             archive_duration += 60.0
         ordered = sorted(group, key=lambda entry: float(entry["startSeconds"]))
         for entry in ordered:
