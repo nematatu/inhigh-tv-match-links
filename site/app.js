@@ -15,7 +15,6 @@ const elements = {
   date: document.querySelector("#date-filter"),
   round: document.querySelector("#round-filter"),
   status: document.querySelector("#status-filter"),
-  court: document.querySelector("#court-filter"),
   search: document.querySelector("#search-filter"),
   reset: document.querySelector("#reset-filters"),
   generatedAt: document.querySelector("#generated-at"),
@@ -89,10 +88,8 @@ function searchableText(entry) {
     categoryLabel(categoryKey(entry)),
     entry.eventTitle,
     entry.round,
-    entry.matchNo,
     entry.orderName,
     entry.date,
-    entry.court,
     entry.status,
     entry.statusReason,
     ...((entry.sides || []).flatMap((side) => [
@@ -111,7 +108,6 @@ function filteredMatches() {
     if (elements.date.value !== "all" && entry.date !== elements.date.value) return false;
     if (elements.round.value !== "all" && (entry.round || "round-unknown") !== elements.round.value) return false;
     if (elements.status.value !== "all" && entry.status !== elements.status.value) return false;
-    if (elements.court.value !== "all" && entry.court !== elements.court.value) return false;
     if (query && !searchableText(entry).includes(query)) return false;
     return true;
   });
@@ -132,7 +128,6 @@ function resetFilterControls() {
   elements.date.value = "all";
   elements.round.value = "all";
   elements.status.value = "all";
-  elements.court.value = "all";
   elements.search.value = "";
 }
 
@@ -200,7 +195,7 @@ function renderSides(parent, entry) {
       const players = side.players.map((player) => player.name).filter(Boolean).join("・");
       if (players && players !== side.name) appendText(line, "span", "side-players", `（${players}）`);
     }
-    if (winnerIndex === index) appendText(line, "span", "side-result-badge", "勝");
+    if (winnerIndex === index) appendText(line, "span", "side-result-badge", "勝者");
     parent.append(line);
   });
 }
@@ -219,12 +214,11 @@ function resultInfo(entry) {
 
 function renderResult(parent, entry) {
   if (!entry.result) return;
-  const { winnerIndex, winnerName, reasons } = resultInfo(entry);
+  const { winnerName, reasons } = resultInfo(entry);
   const banner = document.createElement("div");
   banner.className = "result-banner";
   appendText(banner, "span", "result-banner__label", winnerName ? "勝者" : "結果");
   if (winnerName) appendText(banner, "strong", "result-banner__winner", winnerName);
-  if (winnerIndex !== null) appendText(banner, "span", "result-banner__badge", "勝");
   else if (!winnerName) appendText(banner, "span", "result-banner__status", "確認済み");
   parent.append(banner);
   if (reasons.length) appendText(parent, "p", "result-banner__reason", reasons.join(" / "));
@@ -300,23 +294,20 @@ function renderCard(entry) {
   const card = document.createElement("article");
   card.className = "match-card";
 
-  const meta = document.createElement("div");
-  meta.className = "match-card__meta";
-  appendText(meta, "strong", "match-card__number", entry.matchNo || "試合番号未確認");
-  appendText(meta, "span", "match-card__eyebrow", entry.orderName || typeLabel(entry));
-  appendText(meta, "span", "match-card__detail", `${dateLabel(entry.date)}${entry.court ? ` · ${entry.court}コート` : ""}`);
+  const content = document.createElement("div");
+  content.className = "match-card__content";
+  renderResult(content, entry);
 
   const sides = document.createElement("div");
   sides.className = "match-card__sides";
-  appendText(sides, "p", "match-card__event", entry.eventTitle || entry.tournamentName || "");
   renderSides(sides, entry);
   if (entry.result || entry.score?.games?.length) {
     const resultBlock = document.createElement("div");
     resultBlock.className = "match-card__result";
-    renderResult(resultBlock, entry);
     renderScore(resultBlock, entry);
     sides.append(resultBlock);
   }
+  content.append(sides);
 
   const action = document.createElement("div");
   action.className = "match-card__action";
@@ -347,7 +338,7 @@ function renderCard(entry) {
     if (entry.statusReason) appendText(action, "span", "unavailable-detail", entry.statusReason);
   }
 
-  card.append(meta, sides, action);
+  card.append(content, action);
   return card;
 }
 
@@ -401,8 +392,7 @@ function initialiseFilters() {
   setOptions(elements.category, state.matches.map(categoryKey), categoryLabel);
   setOptions(elements.date, state.matches.map((entry) => entry.date), dateLabel);
   setOptions(elements.round, state.matches.map((entry) => entry.round || "round-unknown"), roundLabel);
-  setOptions(elements.court, state.matches.map((entry) => entry.court), (value) => `${value}コート`);
-  [elements.type, elements.category, elements.date, elements.round, elements.status, elements.court, elements.search].forEach((element) => {
+  [elements.type, elements.category, elements.date, elements.round, elements.status, elements.search].forEach((element) => {
     element.addEventListener("input", render);
     element.addEventListener("change", render);
   });
