@@ -8,14 +8,34 @@ const state = {
 const elements = {
   list: document.querySelector("#matches"),
   summary: document.querySelector("#result-summary"),
+  overviewSummary: document.querySelector("#overview-summary"),
+  categorySummary: document.querySelector("#category-summary"),
   type: document.querySelector("#type-filter"),
   category: document.querySelector("#category-filter"),
   date: document.querySelector("#date-filter"),
+  round: document.querySelector("#round-filter"),
+  status: document.querySelector("#status-filter"),
   court: document.querySelector("#court-filter"),
   search: document.querySelector("#search-filter"),
-  availableOnly: document.querySelector("#available-only"),
   reset: document.querySelector("#reset-filters"),
   generatedAt: document.querySelector("#generated-at"),
+};
+
+const CATEGORY_ORDER = ["MS", "MD", "WS", "WD", "TEAM-M", "TEAM-W"];
+
+const CATEGORY_LABELS = {
+  MS: "MS（男子シングルス）",
+  MD: "MD（男子ダブルス）",
+  WS: "WS（女子シングルス）",
+  WD: "WD（女子ダブルス）",
+  "TEAM-M": "男子団体",
+  "TEAM-W": "女子団体",
+};
+
+const STATUS_LABELS = {
+  available: "動画リンクあり",
+  not_played: "未実施",
+  unavailable: "要確認",
 };
 
 function option(label, value) {
@@ -38,23 +58,21 @@ function setOptions(select, values, formatter = (value) => value) {
 function dateLabel(value) {
   if (!value) return "日付未確認";
   const [, month, day] = String(value).split("-");
-  return `${month}/${day}`;
+  return `${Number(month)}月${Number(day)}日`;
+}
+
+function roundLabel(value) {
+  return value || "回戦未確認";
 }
 
 function statusLabel(entry) {
-  if (entry.status === "not_played") return "未実施";
-  if (entry.status === "unavailable") return "動画未確認";
-  return "動画リンクあり";
+  return STATUS_LABELS[entry.status] || "状態未確認";
 }
 
-const CATEGORY_LABELS = {
-  MS: "MS（男子シングルス）",
-  WS: "WS（女子シングルス）",
-  MD: "MD（男子ダブルス）",
-  WD: "WD（女子ダブルス）",
-  男子: "男子団体",
-  女子: "女子団体",
-};
+function categoryKey(entry) {
+  if (entry.tournamentType === "team") return entry.category === "男子" ? "TEAM-M" : "TEAM-W";
+  return entry.category || "UNKNOWN";
+}
 
 function categoryLabel(value) {
   return CATEGORY_LABELS[value] || value || "種目未確認";
@@ -68,13 +86,20 @@ function searchableText(entry) {
   return [
     entry.tournamentName,
     entry.category,
+    categoryLabel(categoryKey(entry)),
     entry.eventTitle,
     entry.round,
     entry.matchNo,
     entry.orderName,
     entry.date,
     entry.court,
-    ...((entry.sides || []).flatMap((side) => [side.name, ...(side.players || []).flatMap((player) => [player.name, player.belong])])),
+    entry.status,
+    entry.statusReason,
+    ...((entry.sides || []).flatMap((side) => [
+      side.name,
+      side.school,
+      ...(side.players || []).flatMap((player) => [player.name, player.belong]),
+    ])),
   ].join(" ").toLocaleLowerCase("ja");
 }
 
@@ -82,10 +107,11 @@ function filteredMatches() {
   const query = elements.search.value.trim().toLocaleLowerCase("ja");
   return state.matches.filter((entry) => {
     if (elements.type.value !== "all" && entry.tournamentType !== elements.type.value) return false;
-    if (elements.category.value !== "all" && entry.category !== elements.category.value) return false;
+    if (elements.category.value !== "all" && categoryKey(entry) !== elements.category.value) return false;
     if (elements.date.value !== "all" && entry.date !== elements.date.value) return false;
+    if (elements.round.value !== "all" && (entry.round || "round-unknown") !== elements.round.value) return false;
+    if (elements.status.value !== "all" && entry.status !== elements.status.value) return false;
     if (elements.court.value !== "all" && entry.court !== elements.court.value) return false;
-    if (elements.availableOnly.checked && entry.status !== "available") return false;
     if (query && !searchableText(entry).includes(query)) return false;
     return true;
   });
@@ -95,18 +121,19 @@ function filterSummary() {
   const type = elements.type.value === "all" ? "全種別" : elements.type.value === "team" ? "団体" : "個人";
   const category = elements.category.value === "all" ? "全種目" : categoryLabel(elements.category.value);
   const date = elements.date.value === "all" ? "全日付" : dateLabel(elements.date.value);
-  const court = elements.court.value === "all" ? "全コート" : `${elements.court.value}コート`;
-  const availability = elements.availableOnly.checked ? "動画リンクありのみ" : "状態すべて";
-  return `${type} / ${category} / ${date} / ${court} / ${availability}`;
+  const round = elements.round.value === "all" ? "全回戦" : roundLabel(elements.round.value);
+  const status = elements.status.value === "all" ? "状態すべて" : statusLabel({ status: elements.status.value });
+  return `${type} / ${category} / ${date} / ${round} / ${status}`;
 }
 
 function resetFilterControls() {
   elements.type.value = "all";
   elements.category.value = "all";
   elements.date.value = "all";
+  elements.round.value = "all";
+  elements.status.value = "all";
   elements.court.value = "all";
   elements.search.value = "";
-  elements.availableOnly.checked = false;
 }
 
 function appendText(parent, tagName, className, text) {
@@ -117,18 +144,39 @@ function appendText(parent, tagName, className, text) {
   return element;
 }
 
-function groupKey(entry) {
-  return [entry.date, entry.tournamentType, entry.category, entry.round || "round-unknown"].join("|");
-}
+function renderOverview() {
+  const counts = state.data?.counts || {};
+  elements.overviewSummary.replaceChildren();
+  const total = Number(counts.total) || state.matches.length;
+  const available = Number(counts.available) || 0;
+  const notPlayed = Number(counts.notPlayed) || 0;
+  const unavailable = Number(counts.unavailable) || 0;
+  const strong = document.createElement("strong");
+  strong.textContent = total.toLocaleString("ja-JP");
+  elements.overviewSummary.append(strong, "試合　/　", `動画リンク ${available.toLocaleString("ja-JP")}　/　`, `未実施 ${notPlayed.toLocaleString("ja-JP")}　/　`, `要確認 ${unavailable.toLocaleString("ja-JP")}`);
 
-function groupMatches(matches) {
-  const groups = new Map();
-  for (const entry of matches) {
-    const key = groupKey(entry);
-    if (!groups.has(key)) groups.set(key, []);
-    groups.get(key).push(entry);
+  const aggregates = new Map();
+  for (const entry of state.matches) {
+    const key = categoryKey(entry);
+    if (!aggregates.has(key)) aggregates.set(key, { total: 0, available: 0, not_played: 0, unavailable: 0 });
+    const row = aggregates.get(key);
+    row.total += 1;
+    if (row[entry.status] !== undefined) row[entry.status] += 1;
   }
-  return [...groups.values()];
+
+  elements.categorySummary.replaceChildren();
+  const orderedKeys = [...CATEGORY_ORDER, ...[...aggregates.keys()].filter((key) => !CATEGORY_ORDER.includes(key))];
+  for (const key of orderedKeys) {
+    const row = aggregates.get(key);
+    if (!row) continue;
+    const tr = document.createElement("tr");
+    appendText(tr, "th", "summary-table__name", categoryLabel(key)).scope = "row";
+    appendText(tr, "td", "", row.total.toLocaleString("ja-JP"));
+    appendText(tr, "td", "", row.available.toLocaleString("ja-JP"));
+    appendText(tr, "td", "", row.not_played.toLocaleString("ja-JP"));
+    appendText(tr, "td", "", row.unavailable.toLocaleString("ja-JP"));
+    elements.categorySummary.append(tr);
+  }
 }
 
 function renderSides(parent, entry) {
@@ -146,23 +194,13 @@ function renderSides(parent, entry) {
     if (winnerIndex === index) line.classList.add("side-line--winner");
     else if (winnerIndex !== null) line.classList.add("side-line--loser");
 
-    appendText(line, "strong", "side-name", side.name || `${index + 1}チーム`);
-    if (side.school) {
-      const school = document.createElement("span");
-      school.className = "side-school";
-      school.textContent = `学校: ${side.school}`;
-      line.append(" ", school);
-    }
+    appendText(line, "strong", "side-name", side.name || `${index + 1}側`);
+    if (side.school && side.school !== side.name) appendText(line, "span", "side-school", side.school);
     if (side.players?.length) {
       const players = side.players.map((player) => player.name).filter(Boolean).join("・");
-      if (players && players !== side.name) {
-        const detail = document.createElement("span");
-        detail.className = "side-players";
-        detail.textContent = `（${players}）`;
-        line.append(" ", detail);
-      }
+      if (players && players !== side.name) appendText(line, "span", "side-players", `（${players}）`);
     }
-    if (winnerIndex === index) appendText(line, "span", "side-result-badge", "勝者");
+    if (winnerIndex === index) appendText(line, "span", "side-result-badge", "勝");
     parent.append(line);
   });
 }
@@ -174,60 +212,24 @@ function resultDetail(entry) {
     .map((reason, index) => reason ? `${entry.sides?.[index]?.name || `${index + 1}側`}: ${reason}` : "")
     .filter(Boolean);
   if (reasons.length) return reasons.join(" / ");
-  return result.winnerIndex === null ? "結果確認済み" : "";
+  if (result.winnerName) return `勝者: ${result.winnerName}`;
+  return "結果確認済み";
 }
 
 function renderScore(parent, entry) {
   const score = entry.score;
-  if (!score?.games?.length || !entry.sides?.length) return;
-  const games = score.games
-    .filter((game) => game.some((point) => Number.isFinite(point)))
-  if (!games.length) return;
+  const games = (score?.games || []).filter((game) => game.some((point) => Number.isFinite(point) && point > 0));
+  if (!games.length || !entry.sides?.length) return;
 
   const block = document.createElement("div");
   block.className = "score-block";
-  const label = document.createElement("p");
-  label.className = "score-block__label";
-  label.append("ゲーム別スコア");
+  appendText(block, "span", "score-block__label", "スコア");
+  const inline = document.createElement("p");
+  inline.className = "score-inline";
+  appendText(inline, "span", "score-inline__sets", games.map((game) => game.map((point) => Number.isFinite(point) ? point : "—").join("–")).join(" / "));
   const gameWins = (score.gameWins || []).filter((wins) => Number.isFinite(wins));
-  if (gameWins.length === 2) {
-    appendText(label, "span", "score-block__summary", `ゲーム ${gameWins[0]}-${gameWins[1]}`);
-  }
-  block.append(label);
-
-  const tableWrap = document.createElement("div");
-  tableWrap.className = "score-table-wrap";
-  const table = document.createElement("table");
-  table.className = "score-table";
-  const head = document.createElement("thead");
-  const headRow = document.createElement("tr");
-  appendText(headRow, "th", "score-table__side", "対戦者");
-  games.forEach((_, index) => appendText(headRow, "th", "score-table__game", `第${index + 1}G`));
-  appendText(headRow, "th", "score-table__wins", "勝ゲーム");
-  head.append(headRow);
-  table.append(head);
-
-  const body = document.createElement("tbody");
-  const winnerIndex = entry.result?.winnerIndex === 0 || entry.result?.winnerIndex === 1
-    ? entry.result.winnerIndex
-    : null;
-  entry.sides.slice(0, 2).forEach((side, sideIndex) => {
-    const row = document.createElement("tr");
-    if (winnerIndex === sideIndex) row.className = "score-table__winner";
-    else if (winnerIndex !== null) row.className = "score-table__loser";
-    const name = side.name || `${sideIndex + 1}側`;
-    appendText(row, "th", "score-table__side", name).scope = "row";
-    games.forEach((game) => {
-      const point = Number.isFinite(game[sideIndex]) ? game[sideIndex] : "—";
-      appendText(row, "td", "score-table__game", String(point));
-    });
-    const wins = Number.isFinite(score.gameWins?.[sideIndex]) ? score.gameWins[sideIndex] : "—";
-    appendText(row, "td", "score-table__wins", String(wins));
-    body.append(row);
-  });
-  table.append(body);
-  tableWrap.append(table);
-  block.append(tableWrap);
+  if (gameWins.length === 2) appendText(inline, "span", "score-inline__games", `ゲーム ${gameWins[0]}–${gameWins[1]}`);
+  block.append(inline);
   parent.append(block);
 }
 
@@ -237,12 +239,13 @@ function renderCard(entry) {
 
   const meta = document.createElement("div");
   meta.className = "match-card__meta";
-  appendText(meta, "span", "match-card__eyebrow", `${typeLabel(entry)} · ${entry.category || "種目未確認"}`);
+  appendText(meta, "strong", "match-card__number", entry.matchNo || "試合番号未確認");
+  appendText(meta, "span", "match-card__eyebrow", entry.orderName || typeLabel(entry));
   appendText(meta, "span", "match-card__detail", `${dateLabel(entry.date)}${entry.court ? ` · ${entry.court}コート` : ""}`);
 
   const sides = document.createElement("div");
   sides.className = "match-card__sides";
-  appendText(sides, "span", "match-card__detail", entry.eventTitle || entry.tournamentName || "");
+  appendText(sides, "p", "match-card__event", entry.eventTitle || entry.tournamentName || "");
   renderSides(sides, entry);
   const detail = resultDetail(entry);
   if (detail || entry.score?.games?.length) {
@@ -262,7 +265,6 @@ function renderCard(entry) {
     scoreLink.target = "_blank";
     scoreLink.rel = "noreferrer";
     scoreLink.textContent = "BIRD SCORE";
-    scoreLink.title = "公式BIRD SCOREを開く";
     action.append(scoreLink);
   }
   if (entry.status === "available" && entry.archiveUrl) {
@@ -277,13 +279,28 @@ function renderCard(entry) {
   } else {
     const unavailable = document.createElement("span");
     unavailable.className = "unavailable-button";
-    unavailable.title = entry.statusReason || "開始位置を確認できないため、リンクを有効化していません。";
+    unavailable.title = entry.statusReason || "動画リンクを確認できません。";
     unavailable.textContent = statusLabel(entry);
     action.append(unavailable);
+    if (entry.statusReason) appendText(action, "span", "unavailable-detail", entry.statusReason);
   }
 
   card.append(meta, sides, action);
   return card;
+}
+
+function groupKey(entry) {
+  return [entry.date, entry.tournamentType, categoryKey(entry), entry.round || "round-unknown"].join("|");
+}
+
+function groupMatches(matches) {
+  const groups = new Map();
+  for (const entry of matches) {
+    const key = groupKey(entry);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(entry);
+  }
+  return [...groups.values()];
 }
 
 function renderGroup(entries) {
@@ -293,21 +310,8 @@ function renderGroup(entries) {
 
   const heading = document.createElement("div");
   heading.className = "match-group__header";
-  const headingText = document.createElement("div");
-  headingText.className = "match-group__heading-text";
-  appendText(
-    headingText,
-    "h3",
-    "match-group__title",
-    `${dateLabel(first.date)} · ${typeLabel(first)} · ${first.eventTitle || first.category || "種目未確認"} · ${first.round || "回戦未確認"}`,
-  );
-  appendText(
-    headingText,
-    "p",
-    "match-group__meta",
-    `${entries.length.toLocaleString("ja-JP")}試合`,
-  );
-  heading.append(headingText);
+  appendText(heading, "h3", "match-group__title", `${dateLabel(first.date)} / ${typeLabel(first)} / ${categoryLabel(categoryKey(first))} / ${roundLabel(first.round)}`);
+  appendText(heading, "p", "match-group__meta", `${entries.length.toLocaleString("ja-JP")}試合`);
 
   const list = document.createElement("div");
   list.className = "match-group__list";
@@ -319,26 +323,24 @@ function renderGroup(entries) {
 function render() {
   const matches = filteredMatches();
   elements.list.replaceChildren();
+  const groups = groupMatches(matches);
   if (!matches.length) {
     appendText(elements.list, "p", "empty-state", "条件に一致する試合がありません。");
   } else {
     const fragment = document.createDocumentFragment();
-    const groups = groupMatches(matches);
     groups.forEach((group) => fragment.append(renderGroup(group)));
     elements.list.append(fragment);
-    elements.summary.textContent = `${matches.length.toLocaleString("ja-JP")}件表示 / ${groups.length.toLocaleString("ja-JP")}グループ / 全データ${state.matches.length.toLocaleString("ja-JP")}件 · 条件: ${filterSummary()}`;
-    return;
   }
-  elements.summary.textContent = `${matches.length.toLocaleString("ja-JP")}件表示 / 全データ${state.matches.length.toLocaleString("ja-JP")}件 · 条件: ${filterSummary()}`;
+  elements.summary.textContent = `${matches.length.toLocaleString("ja-JP")}件表示 / 全${state.matches.length.toLocaleString("ja-JP")}件 · ${filterSummary()}`;
 }
 
 function initialiseFilters() {
-  // 新しく開いたときは全試合を表示し、前回のブラウザ復元値で件数が減らないようにします。
   resetFilterControls();
-  setOptions(elements.category, state.matches.map((entry) => entry.category), categoryLabel);
+  setOptions(elements.category, state.matches.map(categoryKey), categoryLabel);
   setOptions(elements.date, state.matches.map((entry) => entry.date), dateLabel);
+  setOptions(elements.round, state.matches.map((entry) => entry.round || "round-unknown"), roundLabel);
   setOptions(elements.court, state.matches.map((entry) => entry.court), (value) => `${value}コート`);
-  [elements.type, elements.category, elements.date, elements.court, elements.search, elements.availableOnly].forEach((element) => {
+  [elements.type, elements.category, elements.date, elements.round, elements.status, elements.court, elements.search].forEach((element) => {
     element.addEventListener("input", render);
     element.addEventListener("change", render);
   });
@@ -354,15 +356,15 @@ async function load() {
     if (!response.ok) throw new Error(`データ取得に失敗しました（${response.status}）`);
     state.data = await response.json();
     state.matches = Array.isArray(state.data.matches) ? state.data.matches : [];
-    if (state.data.generatedAt) {
-      elements.generatedAt.textContent = `データ生成日時: ${new Date(state.data.generatedAt).toLocaleString("ja-JP")}`;
-    }
+    if (state.data.generatedAt) elements.generatedAt.textContent = `更新: ${new Date(state.data.generatedAt).toLocaleString("ja-JP")}`;
+    renderOverview();
     initialiseFilters();
     render();
   } catch (error) {
     elements.list.replaceChildren();
     appendText(elements.list, "p", "error-state", `データを読み込めませんでした。${error.message}`);
     elements.summary.textContent = "読み込みエラー";
+    elements.overviewSummary.textContent = "データを読み込めませんでした。";
   }
 }
 
