@@ -224,6 +224,25 @@ function firstProgramDateTime(text) {
   return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : "";
 }
 
+function programDateTimeForDate(text, date) {
+  const lines = String(text || "").split(/\r?\n/);
+  for (const line of lines) {
+    const match = line.match(/^#EXT-X-PROGRAM-DATE-TIME:([^\r\n]+)/);
+    if (!match) {
+      continue;
+    }
+    const timestamp = Date.parse(match[1].trim());
+    if (!Number.isFinite(timestamp)) {
+      continue;
+    }
+    const iso = new Date(timestamp).toISOString();
+    if (iso.slice(0, 10) === date) {
+      return iso;
+    }
+  }
+  return firstProgramDateTime(text);
+}
+
 function firstVariantUrl(masterUrl, text) {
   const lines = String(text || "").split(/\r?\n/).map((line) => line.trim());
   for (let index = 0; index < lines.length; index += 1) {
@@ -274,7 +293,10 @@ async function fetchProgramDateTime(archive, projectId, apiKey) {
       throw new Error(`HLS variant ${variantResponse.status}`);
     }
     const variantText = variantUrl === source ? masterText : await variantResponse.text();
-    const programDateTime = firstProgramDateTime(variantText);
+    // 一部の公式アーカイブは複数日分を連結したHLSになっており、
+    // マニフェスト先頭の日時が公開日と異なる場合があります。
+    // 対象日の最初のPROGRAM-DATE-TIMEを基準にして試合位置を計算します。
+    const programDateTime = programDateTimeForDate(variantText, archive.date);
     if (!programDateTime) {
       return invalid("HLSの開始日時を確認できませんでした。");
     }
